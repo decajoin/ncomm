@@ -32,19 +32,52 @@ commits each group with only its explicit file list.
 
 ## Install
 
-```bash
-uv tool install ncomm-cli
-# or
-pip install ncomm-cli
-```
+`ncomm` ships a `uv.lock` and a pinned `requirements.txt`, so you can install
+with either **uv** or **pip** — whichever your environment prefers.
 
-From source:
+### Option A — uv (recommended)
 
 ```bash
 git clone https://github.com/decajoin/ncomm
 cd ncomm
-uv sync
+uv sync                # creates .venv, installs pinned runtime deps from uv.lock
 uv run ncomm --version
+```
+
+Or install it as a global tool:
+
+```bash
+uv tool install ncomm-cli
+```
+
+### Option B — pip
+
+Runtime dependencies are pinned in `requirements.txt` (runtime only — no
+pytest/ruff), so a plain `pip` install is reproducible without uv:
+
+```bash
+git clone https://github.com/decajoin/ncomm
+cd ncomm
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt                      # pinned runtime deps
+pip install -e .                                     # install ncomm itself (editable)
+ncomm --version
+```
+
+Or from PyPI:
+
+```bash
+pip install ncomm-cli
+```
+
+### Regenerating the lockfile / requirements
+
+Both files are kept in sync. If you change `pyproject.toml`:
+
+```bash
+uv lock                                   # refresh uv.lock
+uv export --format requirements-txt --no-hashes --no-emit-project --no-dev \
+    -o requirements.txt                   # refresh runtime-only requirements.txt
 ```
 
 ## First-time setup
