@@ -64,3 +64,10 @@ def test_parse_rejects_missing_type():
 def test_group_header_strips_empty_scope():
     g = CommitGroup(type="chore", summary="bump deps", scope="")
     assert g.header == "chore: bump deps"
+
+
+@pytest.mark.parametrize("bad_scope", ["None", "null", "NONE", "-", "n/a"])
+def test_parse_strips_null_literal_scope(bad_scope):
+    g = parse_groups({"groups": [_group(scope=bad_scope)]})[0]
+    assert g.scope == ""
+    assert g.header == "feat: add thing"

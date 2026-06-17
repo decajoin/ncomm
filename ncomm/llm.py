@@ -115,11 +115,17 @@ def parse_groups(raw: object) -> List[CommitGroup]:
         files = item.get("files", [])
         if not isinstance(files, list) or not files:
             raise LLMError(f"Group '{summary}' has no files.")
+        # Sanitize scope: drop empty / null-literal / placeholder values the
+        # model sometimes emits (None, null, "-") so they don't render as
+        # `fix(None): ...`. A blank scope simply renders as `fix: ...`.
+        raw_scope = str(item.get("scope", "")).strip()
+        if raw_scope.lower() in {"", "none", "null", "-", "n/a"}:
+            raw_scope = ""
         groups.append(
             CommitGroup(
                 type=gtype,
                 summary=summary,
-                scope=str(item.get("scope", "")).strip(),
+                scope=raw_scope,
                 body=str(item.get("body", "")).strip(),
                 files=[str(f).strip() for f in files if str(f).strip()],
                 rationale=str(item.get("rationale", "")).strip(),
