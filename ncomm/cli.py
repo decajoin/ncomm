@@ -160,9 +160,9 @@ def run(
         None, "--model", "-m", help="Override the model id for this request."
     ),
     lang: str = typer.Option(
-        os.environ.get("NCOMM_LANG", "zh"),
+        os.environ.get("NCOMM_LANG", "en"),
         "--lang",
-        help="Language for commit messages (e.g. zh, en).",
+        help="Language for commit messages (e.g. en, zh).",
     ),
     version: bool = typer.Option(
         False, "--version", callback=_version_callback, is_eager=True,

@@ -65,7 +65,7 @@ ncomm -n               # dry run: show proposed commits, commit nothing
 ncomm --no-group       # force a single commit covering all changes
 ncomm --pro            # use the stronger model for this run
 ncomm -m <model>       # override the model id
-ncomm --lang en        # messages in English (default: zh)
+ncomm --lang en        # messages in English (default: en; use zh for Chinese)
 ```
 
 ## Safety contract
