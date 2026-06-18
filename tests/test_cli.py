@@ -1,8 +1,15 @@
 """Tests for ncomm.cli interactive helpers (prompt driven via monkeypatch)."""
 
+import subprocess
+
 import ncomm.cli as cli
 from ncomm.gitops import Changes
 from ncomm.llm import CommitGroup
+
+
+class _FakeStdin:
+    def isatty(self):
+        return True
 
 
 class _FakePrompt:
@@ -55,3 +62,23 @@ def test_yes_mode_commits_without_prompting(monkeypatch):
     monkeypatch.setattr(cli.Prompt, "ask", boom)
     action, payload = cli._prompt_group(1, 1, _group(), Changes(branch="main"), yes=True)
     assert action == "commit"
+
+
+def test_edit_message_splits_editor_with_flags(monkeypatch):
+    monkeypatch.setenv("EDITOR", "fakeed --wait")
+    monkeypatch.setattr(cli.sys, "stdin", _FakeStdin())
+
+    captured = {}
+
+    def fake_run(cmd, check):
+        captured["cmd"] = cmd
+        with open(cmd[-1], "w", encoding="utf-8") as fh:
+            fh.write("edited message\n")
+        return None
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = cli._edit_message("original")
+
+    # "fakeed --wait" must become two argv tokens, not one filename.
+    assert captured["cmd"][:2] == ["fakeed", "--wait"]
+    assert out == "edited message"

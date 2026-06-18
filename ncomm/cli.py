@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -142,13 +143,18 @@ def _edit_message(message: str) -> str:
         ) as fh:
             fh.write(message)
             tmp_path = fh.name
+        # shlex.split so EDITOR values with flags (e.g. "code --wait",
+        # "vim -p") are passed as separate argv tokens, not one filename.
+        cmd = [*shlex.split(editor), tmp_path]
         try:
             import subprocess
 
-            subprocess.run([editor, tmp_path], check=True)
+            subprocess.run(cmd, check=True)
             new = Path(tmp_path).read_text(encoding="utf-8")
         except (subprocess.CalledProcessError, OSError) as exc:
-            err_console.print(f"[yellow]editor failed: {exc}; using prompt.[/yellow]")
+            err_console.print(
+                f"[yellow]editor command {cmd!r} failed: {exc}; using prompt.[/yellow]"
+            )
             new = message
         finally:
             try:
