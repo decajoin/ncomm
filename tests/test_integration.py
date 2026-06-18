@@ -115,3 +115,19 @@ def test_diff_for_paths_tracked_and_untracked(repo):
     assert "+ADDED" in text
     assert "new file: fresh.txt" in text
     assert "brand new line" in text
+
+
+def test_non_ascii_path_gets_a_real_patch(repo):
+    # A CJK filename must not be octal-escaped/quoted in diff output, or the
+    # bundle would show "(no patch)" and numstat wouldn't match (added stays 0).
+    (repo / "中文.txt").write_text("first\n")
+    _git(repo, "add", "中文.txt")
+    _git(repo, "commit", "-qm", "add cjk")
+    (repo / "中文.txt").write_text("first\nsecond\n")
+
+    changes = collect_changes()
+    fc = next(f for f in changes.files if f.path == "中文.txt")
+    assert fc.added >= 1                      # numstat matched the unquoted path
+    assert "中文.txt" in changes.diff_bundle
+    assert "(no patch)" not in changes.diff_bundle
+    assert "+second" in changes.diff_bundle

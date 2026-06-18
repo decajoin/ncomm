@@ -33,7 +33,10 @@ class GitError(RuntimeError):
 def _run(args: List[str], *, cwd: str, check: bool = True) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
-            ["git", *args],
+            # core.quotepath=false keeps non-ASCII paths (e.g. CJK filenames)
+            # literal in diff/status output instead of octal-escaped + quoted,
+            # so _split_patches and the numstat parse can match them by path.
+            ["git", "-c", "core.quotepath=false", *args],
             cwd=cwd,
             capture_output=True,
             text=True,
