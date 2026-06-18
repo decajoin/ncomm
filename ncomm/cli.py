@@ -50,6 +50,10 @@ config_app = typer.Typer(
 console = Console()
 err_console = Console(stderr=True)
 
+# Cap on how many times one run may re-ask the model to regroup, so a user
+# leaning on 'r' can't burn the API indefinitely.
+MAX_REGROUP_ROUNDS = 5
+
 
 def _version_callback(value: bool) -> None:
     if value:
@@ -193,10 +197,17 @@ def _prompt_group(index: int, total: int, group, changes: Changes, yes: bool) ->
             continue
         if choice == "r":
             instr = Prompt.ask(
-                "[dim]Regroup — one-line instruction (optional, e.g. 'split tests out')[/dim]",
+                "[dim]Regroup — one-line instruction (e.g. 'split tests out')[/dim]",
                 default="",
-            )
-            return "regroup", instr.strip()
+            ).strip()
+            if not instr:
+                # temperature is 0, so an empty hint just reproduces the same
+                # grouping — refuse rather than waste an identical API call.
+                console.print(
+                    "[dim]A hint is required, or the grouping won't change. Pick again.[/dim]"
+                )
+                continue
+            return "regroup", instr
         if choice == "e":
             message = _edit_message(group.message)
             if not message:
@@ -253,6 +264,7 @@ def run(
 
     instruction = ""        # carries a regroup hint into the next round
     session_committed = 0
+    regroup_rounds = 0
     while True:
         try:
             changes = collect_changes()
@@ -334,6 +346,13 @@ def run(
             session_committed += 1
 
         if regroup_instruction is not None:
+            regroup_rounds += 1
+            if regroup_rounds > MAX_REGROUP_ROUNDS:
+                err_console.print(
+                    f"[yellow]Reached the regroup limit ({MAX_REGROUP_ROUNDS}).[/yellow] "
+                    "Use --no-group for one commit, or edit messages with 'e'."
+                )
+                break
             instruction = regroup_instruction
             console.print("[dim]Regrouping the remaining changes…[/dim]\n")
             continue
