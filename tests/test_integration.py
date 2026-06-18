@@ -15,12 +15,21 @@ import subprocess
 import pytest
 
 from ncomm.gitops import (
+    _path_included,
     collect_changes,
     commit,
     diff_for_paths,
     ensure_clean_since,
     stage,
 )
+
+
+def test_path_included_only_and_exclude():
+    assert _path_included("src/auth/x.py", ["src/auth/**"], None)
+    assert not _path_included("src/api/y.py", ["src/auth/**"], None)
+    assert not _path_included("poetry.lock", None, ["*.lock"])
+    assert _path_included("src/auth/x.py", ["src/**"], ["*.lock"])
+    assert _path_included("anything", None, None)
 
 
 def _git(repo, *args: str) -> str:
@@ -137,6 +146,25 @@ def test_non_ascii_path_gets_a_real_patch(repo):
     assert "中文.txt" in changes.diff_bundle
     assert "(no patch)" not in changes.diff_bundle
     assert "+second" in changes.diff_bundle
+
+
+def test_collect_changes_only_and_exclude_filters(repo):
+    (repo / "src").mkdir()
+    (repo / "src" / "auth.py").write_text("a = 1\n")
+    (repo / "wip.py").write_text("scratch\n")
+    (repo / "deps.lock").write_text("locked\n")
+
+    only = collect_changes(only=["src/**"])
+    assert {fc.path for fc in only.files} == {"src/auth.py"}
+
+    excl = collect_changes(exclude=["*.lock", "wip.py"])
+    paths = {fc.path for fc in excl.files}
+    assert "deps.lock" not in paths and "wip.py" not in paths
+    assert "src/auth.py" in paths
+
+    # Filtered-out files are not in the bundle the model sees either.
+    assert "wip.py" not in only.diff_bundle
+    assert "deps.lock" not in only.diff_bundle
 
 
 def test_ensure_clean_since_no_false_surprise(repo):

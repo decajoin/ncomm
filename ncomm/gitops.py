@@ -13,6 +13,7 @@ shot; untracked files are listed separately and their content read directly.
 
 from __future__ import annotations
 
+import fnmatch
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -198,11 +199,35 @@ def _read_untracked_content(root: str, path: str) -> str:
     return "\n".join(head + [f"... {omitted} more lines truncated ..."])
 
 
-def collect_changes() -> Changes:
-    """Gather every uncommitted change relative to HEAD into one Changes object."""
+def _path_included(
+    path: str, only: "List[str] | None", exclude: "List[str] | None"
+) -> bool:
+    """fnmatch-based filter: keep `path` unless `only` is set and misses it, or
+    `exclude` is set and hits it. `only` wins is AND-combined with `exclude`."""
+    if only and not any(fnmatch.fnmatch(path, pat) for pat in only):
+        return False
+    if exclude and any(fnmatch.fnmatch(path, pat) for pat in exclude):
+        return False
+    return True
+
+
+def collect_changes(
+    *, only: "List[str] | None" = None, exclude: "List[str] | None" = None
+) -> Changes:
+    """Gather every uncommitted change relative to HEAD into one Changes object.
+
+    `only`/`exclude` are fnmatch globs applied to each changed path. Filtering
+    here (before the bundle and the changed-paths set are built) means the model
+    only sees the kept files and validation only requires the kept files to be
+    covered — WIP files can stay in the working tree.
+    """
     root = repo_root()
     branch = current_branch(root)
     files, untracked, renames = _parse_porcelain(root)
+    if only or exclude:
+        files = [fc for fc in files if _path_included(fc.path, only, exclude)]
+        kept = {fc.path for fc in files}
+        renames = {new: old for new, old in renames.items() if new in kept}
 
     # Per-file stat (additions/deletions) for the tracked portion.
     stat_out = _run(["diff", "HEAD", "--numstat"], cwd=root, check=False)

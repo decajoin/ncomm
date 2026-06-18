@@ -104,7 +104,14 @@ ncomm --no-group       # force a single commit covering all changes
 ncomm --pro            # use the stronger model for this run
 ncomm -m <model>       # override the model id
 ncomm --lang en        # messages in English (default: en; use zh for Chinese)
+
+# Path filtering (fnmatch globs, repeatable) — leave WIP out of the commit:
+ncomm --only 'src/auth/**' --only 'tests/test_auth*'   # only this slice
+ncomm --exclude '*.lock' --exclude 'tmp/*'             # everything but these
 ```
+
+`--only` / `--exclude` filter the changed set *before* grouping, so excluded
+files stay untouched in your working tree and never need to be committed.
 
 ## Safety contract
 

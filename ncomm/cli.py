@@ -7,7 +7,7 @@ import shlex
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
@@ -245,6 +245,15 @@ def run(
     no_group: bool = typer.Option(
         False, "--no-group", help="Force a single commit covering all changes."
     ),
+    only: Optional[List[str]] = typer.Option(
+        None, "--only",
+        help="Only consider paths matching this glob (repeatable). WIP files "
+        "outside it stay in the working tree.",
+    ),
+    exclude: Optional[List[str]] = typer.Option(
+        None, "--exclude",
+        help="Ignore paths matching this glob (repeatable), e.g. --exclude '*.lock'.",
+    ),
     pro: bool = typer.Option(
         False, "--pro", help=f"Use the stronger model ({PRO_MODEL}) for this request."
     ),
@@ -273,7 +282,7 @@ def run(
     regroup_rounds = 0
     while True:
         try:
-            changes = collect_changes()
+            changes = collect_changes(only=only, exclude=exclude)
         except GitError as exc:
             err_console.print(f"[red]git error:[/red] {exc}")
             raise typer.Exit(code=1)
@@ -281,6 +290,8 @@ def run(
         if changes.is_empty:
             if session_committed:
                 _final_summary(session_committed)
+            elif only or exclude:
+                console.print("[dim]No changed files matched the --only/--exclude filter.[/dim]")
             else:
                 console.print("[dim]Nothing to commit — working tree clean.[/dim]")
             return
