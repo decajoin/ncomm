@@ -87,13 +87,15 @@ class LLMError(RuntimeError):
     pass
 
 
-def _user_message(changes: Changes, *, no_group: bool, lang: str) -> str:
+def _user_message(changes: Changes, *, no_group: bool, lang: str, instruction: str = "") -> str:
     lines = [
         f"Repository language for messages: {lang}",
         f"no_group: {str(no_group).lower()}",
-        "",
-        changes.diff_bundle,
     ]
+    if instruction:
+        # The user rejected the previous grouping; steer the re-grouping.
+        lines.append(f"Extra grouping instruction from the user: {instruction}")
+    lines += ["", changes.diff_bundle]
     return "\n".join(lines)
 
 
@@ -142,6 +144,7 @@ def suggest_groups(
     *,
     no_group: bool = False,
     lang: str = "en",
+    instruction: str = "",
     timeout: float = 45.0,
 ) -> List[CommitGroup]:
     if not cfg.has_key:
@@ -154,7 +157,12 @@ def suggest_groups(
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "system", "content": "Expected output shape:\n" + JSON_SCHEMA_HINT},
-            {"role": "user", "content": _user_message(changes, no_group=no_group, lang=lang)},
+            {
+                "role": "user",
+                "content": _user_message(
+                    changes, no_group=no_group, lang=lang, instruction=instruction
+                ),
+            },
         ],
         "temperature": 0.0,
         "response_format": {"type": "json_object"},

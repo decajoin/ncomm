@@ -168,15 +168,17 @@ def _prompt_group(index: int, total: int, group, changes: Changes, yes: bool) ->
     """Render a group and ask what to do with it.
 
     Returns (action, payload) where action is one of "commit" (payload is the
-    message), "skip", or "quit". The `d` choice prints the diff and re-asks.
+    message), "skip", "quit", or "regroup" (payload is an optional instruction
+    for re-grouping). The `d` choice prints the diff and re-asks.
     """
     _render_group(index, total, group)
     if yes:
         return "commit", group.message
     while True:
         choice = Prompt.ask(
-            "[bold]Commit this?[/bold] [dim](y)es (n)o (e)dit (d)iff (q)uit[/dim]",
-            choices=["y", "n", "e", "d", "q"],
+            "[bold]Commit this?[/bold] "
+            "[dim](y)es (n)o (e)dit (d)iff (r)egroup (q)uit[/dim]",
+            choices=["y", "n", "e", "d", "r", "q"],
             default="y",
             show_choices=False,
         )
@@ -189,6 +191,12 @@ def _prompt_group(index: int, total: int, group, changes: Changes, yes: bool) ->
         if choice == "d":
             _render_group_diff(changes, group)
             continue
+        if choice == "r":
+            instr = Prompt.ask(
+                "[dim]Regroup — one-line instruction (optional, e.g. 'split tests out')[/dim]",
+                default="",
+            )
+            return "regroup", instr.strip()
         if choice == "e":
             message = _edit_message(group.message)
             if not message:
@@ -196,6 +204,14 @@ def _prompt_group(index: int, total: int, group, changes: Changes, yes: bool) ->
                 return "skip", ""
             return "commit", message
         return "commit", group.message
+
+
+def _final_summary(committed: int) -> None:
+    if committed:
+        console.print(f"\n[bold]Done — {committed} commit(s) created.[/bold]")
+        console.print("[dim]ncomm never pushes. Review with `git log` and push when ready.[/dim]")
+    else:
+        console.print("\n[dim]No commits made.[/dim]")
 
 
 # --------------------------------------------------------------------------- #
@@ -229,88 +245,102 @@ def run(
     ),
 ) -> None:
     """Group your working tree into Conventional Commits and commit them."""
-    try:
-        changes = collect_changes()
-    except GitError as exc:
-        err_console.print(f"[red]git error:[/red] {exc}")
-        raise typer.Exit(code=1)
-
-    if changes.is_empty:
-        console.print("[dim]Nothing to commit — working tree clean.[/dim]")
-        raise typer.Exit(code=0)
-
-    _render_changes(changes)
-
     cfg = load_config()
-    if not cfg.has_key:
-        err_console.print(
-            "[red]No DeepSeek API key found.[/red]\n"
-            "Set one with:  [bold]ncomm config set-key[/bold]\n"
-            "or:           [bold]export DEEPSEEK_API_KEY=sk-...[/bold]"
-        )
-        raise typer.Exit(code=1)
-
     if model:
         cfg.model = model
     elif pro:
         cfg.model = PRO_MODEL
 
-    try:
-        with console.status(f"[dim]Asking DeepSeek ({cfg.model})…[/dim]", spinner="dots"):
-            groups = suggest_groups(changes, cfg, no_group=no_group, lang=lang)
-    except LLMError as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(code=1)
+    instruction = ""        # carries a regroup hint into the next round
+    session_committed = 0
+    while True:
+        try:
+            changes = collect_changes()
+        except GitError as exc:
+            err_console.print(f"[red]git error:[/red] {exc}")
+            raise typer.Exit(code=1)
 
-    changed_paths = {fc.path for fc in changes.files}
-    err = _validate_groups(groups, changed_paths)
-    if err:
-        err_console.print(f"[red]Grouping looks wrong, aborting:[/red] {err}")
-        err_console.print("[dim]Re-run, or use --no-group for a single commit.[/dim]")
-        raise typer.Exit(code=1)
+        if changes.is_empty:
+            if session_committed:
+                _final_summary(session_committed)
+            else:
+                console.print("[dim]Nothing to commit — working tree clean.[/dim]")
+            return
 
-    total = len(groups)
-    console.print(f"\n[bold green]Proposed {total} commit(s).[/bold green]\n")
+        _render_changes(changes)
 
-    if dry_run:
-        for i, g in enumerate(groups, 1):
-            _render_group(i, total, g)
-        return
-
-    surprises = ensure_clean_since(changed_paths, cwd=changes.root)
-    if surprises:
-        shown = ", ".join(sorted(surprises)[:5])
-        more = f" (+{len(surprises) - 5} more)" if len(surprises) > 5 else ""
-        err_console.print(
-            f"[yellow]note:[/yellow] {len(surprises)} file(s) changed since analysis "
-            f"and won't be part of any commit: {shown}{more}"
-        )
-
-    committed = 0
-    for i, g in enumerate(groups, 1):
-        action, message = _prompt_group(i, total, g, changes, yes)
-        if action == "quit":
-            break
-        if action == "skip":
-            continue
+        if not cfg.has_key:
+            err_console.print(
+                "[red]No DeepSeek API key found.[/red]\n"
+                "Set one with:  [bold]ncomm config set-key[/bold]\n"
+                "or:           [bold]export DEEPSEEK_API_KEY=sk-...[/bold]"
+            )
+            raise typer.Exit(code=1)
 
         try:
-            stage(g.files, cwd=changes.root)
-            # A renamed file's old path isn't its own changed entry, so carry
-            # its deletion into the commit pathspec or the rename is half-applied.
-            rename_olds = [changes.renames[p] for p in g.files if p in changes.renames]
-            sha = commit(message, cwd=changes.root, paths=g.files + rename_olds)
-        except GitError as exc:
-            err_console.print(f"[red]commit failed:[/red] {exc}")
+            with console.status(f"[dim]Asking DeepSeek ({cfg.model})…[/dim]", spinner="dots"):
+                groups = suggest_groups(
+                    changes, cfg, no_group=no_group, lang=lang, instruction=instruction
+                )
+        except LLMError as exc:
+            err_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1)
-        console.print(f"[green]✓[/green] {sha}  {g.header}")
-        committed += 1
 
-    if committed:
-        console.print(f"\n[bold]Done — {committed}/{total} commit(s) created.[/bold]")
-        console.print("[dim]ncomm never pushes. Review with `git log` and push when ready.[/dim]")
-    else:
-        console.print("\n[dim]No commits made.[/dim]")
+        changed_paths = {fc.path for fc in changes.files}
+        err = _validate_groups(groups, changed_paths)
+        if err:
+            err_console.print(f"[red]Grouping looks wrong, aborting:[/red] {err}")
+            err_console.print("[dim]Re-run, or use --no-group for a single commit.[/dim]")
+            raise typer.Exit(code=1)
+
+        total = len(groups)
+        console.print(f"\n[bold green]Proposed {total} commit(s).[/bold green]\n")
+
+        if dry_run:
+            for i, g in enumerate(groups, 1):
+                _render_group(i, total, g)
+            return
+
+        surprises = ensure_clean_since(changed_paths, cwd=changes.root)
+        if surprises:
+            shown = ", ".join(sorted(surprises)[:5])
+            more = f" (+{len(surprises) - 5} more)" if len(surprises) > 5 else ""
+            err_console.print(
+                f"[yellow]note:[/yellow] {len(surprises)} file(s) changed since analysis "
+                f"and won't be part of any commit: {shown}{more}"
+            )
+
+        regroup_instruction = None
+        for i, g in enumerate(groups, 1):
+            action, message = _prompt_group(i, total, g, changes, yes)
+            if action == "quit":
+                break
+            if action == "skip":
+                continue
+            if action == "regroup":
+                regroup_instruction = message
+                break
+
+            try:
+                stage(g.files, cwd=changes.root)
+                # A renamed file's old path isn't its own changed entry, so carry
+                # its deletion into the commit pathspec or the rename is half-applied.
+                rename_olds = [changes.renames[p] for p in g.files if p in changes.renames]
+                sha = commit(message, cwd=changes.root, paths=g.files + rename_olds)
+            except GitError as exc:
+                err_console.print(f"[red]commit failed:[/red] {exc}")
+                raise typer.Exit(code=1)
+            console.print(f"[green]✓[/green] {sha}  {g.header}")
+            session_committed += 1
+
+        if regroup_instruction is not None:
+            instruction = regroup_instruction
+            console.print("[dim]Regrouping the remaining changes…[/dim]\n")
+            continue
+
+        break
+
+    _final_summary(session_committed)
 
 
 # --------------------------------------------------------------------------- #

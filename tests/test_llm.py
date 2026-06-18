@@ -2,7 +2,17 @@
 
 import pytest
 
-from ncomm.llm import CommitGroup, LLMError, parse_groups
+from ncomm.gitops import Changes
+from ncomm.llm import CommitGroup, LLMError, _user_message, parse_groups
+
+
+def test_user_message_includes_regroup_instruction():
+    changes = Changes(branch="main", diff_bundle="diff goes here")
+    msg = _user_message(changes, no_group=False, lang="en", instruction="split tests out")
+    assert "split tests out" in msg
+    # No instruction -> no instruction line.
+    plain = _user_message(changes, no_group=False, lang="en")
+    assert "instruction" not in plain.lower()
 
 
 def _group(**kw):
