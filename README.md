@@ -19,9 +19,13 @@ Proposed 2 commit(s).
  Wires the OAuth2 device-code grant into the login view.
  files: src/auth/oauth.py, src/auth/__init__.py, tests/test_oauth.py
 
- Commit this? [y/n/e/q] (y): y
+ Commit this? (y)es (n)o (e)dit (d)iff (q)uit (y): y
 ✓ a1b2c3d  feat(auth): add OAuth2 login flow
 ```
+
+At each commit you can press **y** to accept, **n** to skip, **e** to edit the
+message in `$EDITOR`, **d** to show the actual diff for that group, or **q** to
+stop.
 
 ## Why
 

@@ -12,6 +12,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
@@ -27,6 +28,7 @@ from .gitops import (
     GitError,
     collect_changes,
     commit,
+    diff_for_paths,
     ensure_clean_since,
     stage,
 )
@@ -90,6 +92,19 @@ def _render_group(index: int, total: int, group, edited_message: Optional[str] =
     console.print(Panel(body, title=title, border_style="green", expand=False))
 
 
+def _render_group_diff(changes: Changes, group) -> None:
+    """Print the actual diff for a group's files (the `d` review option)."""
+    status = {fc.path: fc.status for fc in changes.files}
+    untracked = [p for p in group.files if status.get(p) == "?"]
+    text = diff_for_paths(group.files, root=changes.root, untracked=untracked)
+    if not text.strip():
+        console.print("[dim](no diff to show)[/dim]")
+        return
+    console.print(
+        Syntax(text, "diff", theme="ansi_dark", word_wrap=False, background_color="default")
+    )
+
+
 def _validate_groups(groups, changed_paths: set[str]) -> Optional[str]:
     """Return an error string if the model's file assignment is wrong, else None."""
     grouped: set[str] = set()
@@ -144,6 +159,43 @@ def _edit_message(message: str) -> str:
         return ptk_prompt("message> ", default=message).strip()
     except Exception:
         return Prompt.ask("message", default=message).strip()
+
+
+# --------------------------------------------------------------------------- #
+# Per-group review prompt
+# --------------------------------------------------------------------------- #
+def _prompt_group(index: int, total: int, group, changes: Changes, yes: bool) -> tuple[str, str]:
+    """Render a group and ask what to do with it.
+
+    Returns (action, payload) where action is one of "commit" (payload is the
+    message), "skip", or "quit". The `d` choice prints the diff and re-asks.
+    """
+    _render_group(index, total, group)
+    if yes:
+        return "commit", group.message
+    while True:
+        choice = Prompt.ask(
+            "[bold]Commit this?[/bold] [dim](y)es (n)o (e)dit (d)iff (q)uit[/dim]",
+            choices=["y", "n", "e", "d", "q"],
+            default="y",
+            show_choices=False,
+        )
+        if choice == "q":
+            console.print("[dim]Aborting remaining groups.[/dim]")
+            return "quit", ""
+        if choice == "n":
+            console.print("[dim]Skipped.[/dim]")
+            return "skip", ""
+        if choice == "d":
+            _render_group_diff(changes, group)
+            continue
+        if choice == "e":
+            message = _edit_message(group.message)
+            if not message:
+                console.print("[dim]Empty message, skipped.[/dim]")
+                return "skip", ""
+            return "commit", message
+        return "commit", group.message
 
 
 # --------------------------------------------------------------------------- #
@@ -236,29 +288,11 @@ def run(
 
     committed = 0
     for i, g in enumerate(groups, 1):
-        if yes:
-            message = g.message
-            _render_group(i, total, g)
-        else:
-            _render_group(i, total, g)
-            choice = Prompt.ask(
-                "[bold]Commit this?[/bold]",
-                choices=["y", "n", "e", "q"],
-                default="y",
-            )
-            if choice == "q":
-                console.print("[dim]Aborting remaining groups.[/dim]")
-                break
-            if choice == "n":
-                console.print("[dim]Skipped.[/dim]")
-                continue
-            if choice == "e":
-                message = _edit_message(g.message)
-                if not message:
-                    console.print("[dim]Empty message, skipped.[/dim]")
-                    continue
-            else:
-                message = g.message
+        action, message = _prompt_group(i, total, g, changes, yes)
+        if action == "quit":
+            break
+        if action == "skip":
+            continue
 
         try:
             stage(g.files, cwd=changes.root)

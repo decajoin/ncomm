@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from ncomm.gitops import collect_changes, commit, stage
+from ncomm.gitops import collect_changes, commit, diff_for_paths, stage
 
 
 def _git(repo, *args: str) -> str:
@@ -101,3 +101,17 @@ def test_deletion_stages_and_commits(repo):
     commit("chore: drop a.txt", cwd=changes.root, paths=["a.txt"])
     assert _committed_files(repo) == {"a.txt"}
     assert not (repo / "a.txt").exists()
+
+
+def test_diff_for_paths_tracked_and_untracked(repo):
+    (repo / "keep.txt").write_text("keep\nADDED\n")
+    (repo / "fresh.txt").write_text("brand new line\n")
+
+    changes = collect_changes()
+    text = diff_for_paths(["keep.txt", "fresh.txt"], root=changes.root, untracked=["fresh.txt"])
+
+    # Tracked file shows up as a real unified diff; untracked file shows content.
+    assert "diff --git a/keep.txt b/keep.txt" in text
+    assert "+ADDED" in text
+    assert "new file: fresh.txt" in text
+    assert "brand new line" in text
