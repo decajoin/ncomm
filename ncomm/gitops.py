@@ -196,6 +196,40 @@ def _parse_porcelain(cwd: str) -> Tuple[List[FileChange], List[str], dict[str, s
     return files, untracked, renames
 
 
+def _parse_staged(cwd: str) -> Tuple[List[FileChange], dict[str, str]]:
+    """Parse the staged (index vs HEAD) change set from `diff --cached`.
+
+    `-z` name-status records are `status<NUL>path` (or `Rxxx<NUL>old<NUL>new`
+    for renames/copies). There are no untracked entries in the index.
+    """
+    out = _run(["diff", "--cached", "--name-status", "-z"], cwd=cwd, check=False)
+    files: List[FileChange] = []
+    renames: dict[str, str] = {}
+    records = out.stdout.split("\0")
+    i = 0
+    while i < len(records):
+        status = records[i]
+        if not status:
+            i += 1
+            continue
+        code = status[0]
+        if code in ("R", "C"):
+            old = records[i + 1] if i + 1 < len(records) else ""
+            new = records[i + 2] if i + 2 < len(records) else ""
+            i += 3
+            if not new:
+                continue
+            files.append(FileChange(path=new, status=code))
+            if code == "R" and old:
+                renames[new] = old
+        else:
+            path = records[i + 1] if i + 1 < len(records) else ""
+            i += 2
+            if path:
+                files.append(FileChange(path=path, status=code))
+    return files, renames
+
+
 def _read_untracked_content(root: str, path: str) -> str:
     """Read an untracked file's content, capped to UNTRACKED_CONTENT_LINES."""
     full = Path(root) / path
@@ -224,9 +258,16 @@ def _path_included(
 
 
 def collect_changes(
-    *, only: "List[str] | None" = None, exclude: "List[str] | None" = None
+    *,
+    only: "List[str] | None" = None,
+    exclude: "List[str] | None" = None,
+    staged: bool = False,
 ) -> Changes:
-    """Gather every uncommitted change relative to HEAD into one Changes object.
+    """Gather the change set into one Changes object.
+
+    By default this is everything uncommitted relative to HEAD (working tree +
+    index + untracked). With `staged=True` it is only the index (`diff --cached`)
+    — what the user has already `git add`-ed — and nothing untracked.
 
     `only`/`exclude` are fnmatch globs applied to each changed path. Filtering
     here (before the bundle and the changed-paths set are built) means the model
@@ -235,14 +276,19 @@ def collect_changes(
     """
     root = repo_root()
     branch = current_branch(root)
-    files, untracked, renames = _parse_porcelain(root)
+    if staged:
+        files, renames = _parse_staged(root)
+        diff_base = ["diff", "--cached"]
+    else:
+        files, untracked, renames = _parse_porcelain(root)
+        diff_base = ["diff", "HEAD"]
     if only or exclude:
         files = [fc for fc in files if _path_included(fc.path, only, exclude)]
         kept = {fc.path for fc in files}
         renames = {new: old for new, old in renames.items() if new in kept}
 
     # Per-file stat (additions/deletions) for the tracked portion.
-    stat_out = _run(["diff", "HEAD", "--numstat"], cwd=root, check=False)
+    stat_out = _run([*diff_base, "--numstat"], cwd=root, check=False)
     add_map: dict[str, Tuple[int, int]] = {}
     for line in stat_out.stdout.splitlines():
         parts = line.split("\t")
@@ -261,7 +307,7 @@ def collect_changes(
         fc.added, fc.deleted = a, d
 
     # Build the diff bundle: truncated per-file patches + untracked content.
-    diff_out = _run(["diff", "HEAD"], cwd=root, check=False)
+    diff_out = _run(diff_base, cwd=root, check=False)
     patches = _split_patches(diff_out.stdout)
 
     bundle_parts: List[str] = [f"Branch: {branch}", ""]

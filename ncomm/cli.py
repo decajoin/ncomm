@@ -258,6 +258,11 @@ def run(
         None, "--exclude",
         help="Ignore paths matching this glob (repeatable), e.g. --exclude '*.lock'.",
     ),
+    staged: bool = typer.Option(
+        False, "--staged",
+        help="Write one commit for what you've already staged (git add), using "
+        "the index as-is. Doesn't re-stage, so 'git add -p' selections are kept.",
+    ),
     pro: bool = typer.Option(
         False, "--pro", help=f"Use the stronger model ({PRO_MODEL}) for this request."
     ),
@@ -280,6 +285,18 @@ def run(
     ),
 ) -> None:
     """Group your working tree into Conventional Commits and commit them."""
+    if staged and (only or exclude):
+        err_console.print(
+            "[red]--staged can't combine with --only/--exclude.[/red] In --staged "
+            "mode ncomm commits the index as-is; curate it with `git add` instead."
+        )
+        raise typer.Exit(code=1)
+    # --staged writes a single commit over the curated index; grouping it would
+    # mean committing index subsets, which can't be done without disturbing a
+    # partial `git add -p` selection.
+    if staged:
+        no_group = True
+
     cfg = load_config()
     if model:
         cfg.model = model
@@ -291,7 +308,7 @@ def run(
     regroup_rounds = 0
     while True:
         try:
-            changes = collect_changes(only=only, exclude=exclude)
+            changes = collect_changes(only=only, exclude=exclude, staged=staged)
         except GitError as exc:
             err_console.print(f"[red]git error:[/red] {exc}")
             raise typer.Exit(code=1)
@@ -299,6 +316,8 @@ def run(
         if changes.is_empty:
             if session_committed:
                 _final_summary(session_committed)
+            elif staged:
+                console.print("[dim]Nothing staged — `git add` some changes first.[/dim]")
             elif only or exclude:
                 console.print("[dim]No changed files matched the --only/--exclude filter.[/dim]")
             else:
@@ -347,14 +366,17 @@ def run(
                 _render_group(i, total, g)
             return
 
-        surprises = ensure_clean_since(changed_paths, cwd=changes.root)
-        if surprises:
-            shown = ", ".join(sorted(surprises)[:5])
-            more = f" (+{len(surprises) - 5} more)" if len(surprises) > 5 else ""
-            err_console.print(
-                f"[yellow]note:[/yellow] {len(surprises)} file(s) changed since analysis "
-                f"and won't be part of any commit: {shown}{more}"
-            )
+        # In --staged mode unstaged changes are expected and intentionally left
+        # out, so the "changed since analysis" check would only add noise.
+        if not staged:
+            surprises = ensure_clean_since(changed_paths, cwd=changes.root)
+            if surprises:
+                shown = ", ".join(sorted(surprises)[:5])
+                more = f" (+{len(surprises) - 5} more)" if len(surprises) > 5 else ""
+                err_console.print(
+                    f"[yellow]note:[/yellow] {len(surprises)} file(s) changed since analysis "
+                    f"and won't be part of any commit: {shown}{more}"
+                )
 
         regroup_instruction = None
         for i, g in enumerate(groups, 1):
@@ -368,11 +390,17 @@ def run(
                 break
 
             try:
-                stage(g.files, cwd=changes.root)
-                # A renamed file's old path isn't its own changed entry, so carry
-                # its deletion into the commit pathspec or the rename is half-applied.
-                rename_olds = [changes.renames[p] for p in g.files if p in changes.renames]
-                sha = commit(message, cwd=changes.root, paths=g.files + rename_olds)
+                if staged:
+                    # Commit the index exactly as the user staged it — no add,
+                    # no pathspec (a pathspec would pull in working-tree content
+                    # and clobber a partial `git add -p` selection).
+                    sha = commit(message, cwd=changes.root)
+                else:
+                    stage(g.files, cwd=changes.root)
+                    # A renamed file's old path isn't its own changed entry, so carry
+                    # its deletion into the commit pathspec or the rename is half-applied.
+                    rename_olds = [changes.renames[p] for p in g.files if p in changes.renames]
+                    sha = commit(message, cwd=changes.root, paths=g.files + rename_olds)
             except GitError as exc:
                 err_console.print(f"[red]commit failed:[/red] {exc}")
                 raise typer.Exit(code=1)

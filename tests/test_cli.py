@@ -2,9 +2,20 @@
 
 import subprocess
 
+from typer.testing import CliRunner
+
 import ncomm.cli as cli
 from ncomm.gitops import Changes
 from ncomm.llm import CommitGroup
+
+runner = CliRunner()
+
+
+def test_staged_rejects_only_and_exclude():
+    # The guard fires before any git/LLM work, so this needs no repo or key.
+    result = runner.invoke(cli.run_app, ["--staged", "--only", "src/**"])
+    assert result.exit_code == 1
+    assert "can't combine" in result.output
 
 
 class _FakeStdin:

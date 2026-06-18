@@ -180,6 +180,26 @@ def test_recent_messages_returns_subjects(repo):
     assert recent_messages(0, cwd=str(repo)) == []
 
 
+def test_collect_changes_staged_sees_only_the_index(repo):
+    # Stage one change, then add an unstaged change on top (partial-stage case).
+    (repo / "keep.txt").write_text("keep\nSTAGED\n")
+    _git(repo, "add", "keep.txt")
+    (repo / "keep.txt").write_text("keep\nSTAGED\nUNSTAGED\n")
+    (repo / "loose.txt").write_text("not added\n")
+
+    staged = collect_changes(staged=True)
+    assert {fc.path for fc in staged.files} == {"keep.txt"}    # only the staged file
+    assert "+STAGED" in staged.diff_bundle
+    assert "UNSTAGED" not in staged.diff_bundle                # the later hunk is excluded
+    assert "loose.txt" not in staged.diff_bundle
+
+    # A staged rename is reported by its new path.
+    _git(repo, "mv", "a.txt", "b.txt")
+    staged2 = collect_changes(staged=True)
+    assert "b.txt" in {fc.path for fc in staged2.files}
+    assert staged2.renames.get("b.txt") == "a.txt"
+
+
 def test_ensure_clean_since_no_false_surprise(repo):
     # An untracked directory (expanded to files by the snapshot) and a CJK path
     # must not be reported as surprises — the check must speak the same path
