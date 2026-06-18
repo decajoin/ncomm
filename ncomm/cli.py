@@ -246,7 +246,7 @@ def run(
 
         try:
             stage(g.files, cwd=changes.root)
-            sha = commit(message, cwd=changes.root)
+            sha = commit(message, cwd=changes.root, paths=g.files)
         except GitError as exc:
             err_console.print(f"[red]commit failed:[/red] {exc}")
             raise typer.Exit(code=1)

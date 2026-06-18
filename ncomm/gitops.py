@@ -1,9 +1,11 @@
 """Git operations for ncomm.
 
-Only three mutating operations ever run through this module:
+Only two mutating operations ever run through this module:
   - `stage(paths)`  — `git add` of *explicitly listed* paths (never `git add -A`)
-  - `commit(message)` — `git commit -m` (no hooks bypassed, no --amend by default)
-  - `commit_amend(message)` — `git commit --amend -m`, gated by safety.py
+  - `commit(message, paths=…)` — `git commit -m … -- <paths>`. The trailing
+    pathspec is load-bearing: it commits ONLY those paths, so unrelated content
+    the user had already staged never gets swept into the wrong commit. Pass
+    `amend=True` to add `--amend` (gated by safety.py at the call site).
 
 Everything else is read-only (diff / status / ls-files). The combined diff is
 `git diff HEAD`, which captures every uncommitted change to tracked files in one
@@ -255,11 +257,20 @@ def stage(paths: List[str], cwd: str) -> None:
     _run(["add", "--", *paths], cwd=cwd, check=True)
 
 
-def commit(message: str, cwd: str, *, amend: bool = False) -> str:
-    """Create a commit. Returns the new HEAD short sha."""
+def commit(
+    message: str, cwd: str, *, paths: "List[str] | None" = None, amend: bool = False
+) -> str:
+    """Create a commit. Returns the new HEAD short sha.
+
+    When `paths` is given the commit is scoped to that pathspec (`git commit
+    -- <paths>`), so only those paths are committed even if the user had other
+    content staged in the index. Without it, the whole index is committed.
+    """
     args = ["commit", "-m", message]
     if amend:
         args.append("--amend")
+    if paths:
+        args += ["--", *paths]
     out = _run(args, cwd=cwd, check=True)
     sha = _run(["rev-parse", "--short", "HEAD"], cwd=cwd, check=True)
     return (sha.stdout.strip() or out.stdout.strip())
