@@ -279,8 +279,8 @@ def run(
                 console.print("[dim]Nothing to commit — working tree clean.[/dim]")
             return
 
-        _render_changes(changes)
-
+        # Report a missing key before rendering the changes table, so the user
+        # isn't shown their whole working tree only to be told they can't proceed.
         if not cfg.has_key:
             err_console.print(
                 "[red]No DeepSeek API key found.[/red]\n"
@@ -288,6 +288,8 @@ def run(
                 "or:           [bold]export DEEPSEEK_API_KEY=sk-...[/bold]"
             )
             raise typer.Exit(code=1)
+
+        _render_changes(changes)
 
         try:
             with console.status(f"[dim]Asking DeepSeek ({cfg.model})…[/dim]", spinner="dots"):
