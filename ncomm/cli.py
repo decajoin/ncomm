@@ -22,7 +22,14 @@ from .config import (
     load_config,
     save_config,
 )
-from .gitops import Changes, GitError, collect_changes, commit, stage
+from .gitops import (
+    Changes,
+    GitError,
+    collect_changes,
+    commit,
+    ensure_clean_since,
+    stage,
+)
 from .llm import LLMError, suggest_groups
 from .safety import OUT_OF_SCOPE
 
@@ -217,6 +224,15 @@ def run(
         for i, g in enumerate(groups, 1):
             _render_group(i, total, g)
         return
+
+    surprises = ensure_clean_since(changed_paths, cwd=changes.root)
+    if surprises:
+        shown = ", ".join(sorted(surprises)[:5])
+        more = f" (+{len(surprises) - 5} more)" if len(surprises) > 5 else ""
+        err_console.print(
+            f"[yellow]note:[/yellow] {len(surprises)} file(s) changed since analysis "
+            f"and won't be part of any commit: {shown}{more}"
+        )
 
     committed = 0
     for i, g in enumerate(groups, 1):

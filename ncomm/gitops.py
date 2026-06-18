@@ -4,8 +4,7 @@ Only two mutating operations ever run through this module:
   - `stage(paths)`  — `git add` of *explicitly listed* paths (never `git add -A`)
   - `commit(message, paths=…)` — `git commit -m … -- <paths>`. The trailing
     pathspec is load-bearing: it commits ONLY those paths, so unrelated content
-    the user had already staged never gets swept into the wrong commit. Pass
-    `amend=True` to add `--amend` (gated by safety.py at the call site).
+    the user had already staged never gets swept into the wrong commit.
 
 Everything else is read-only (diff / status / ls-files). The combined diff is
 `git diff HEAD`, which captures every uncommitted change to tracked files in one
@@ -270,9 +269,26 @@ def stage(paths: List[str], cwd: str) -> None:
     _run(["add", "--", *paths], cwd=cwd, check=True)
 
 
-def commit(
-    message: str, cwd: str, *, paths: "List[str] | None" = None, amend: bool = False
-) -> str:
+def diff_for_paths(paths: List[str], *, root: str, untracked: "List[str] | None" = None) -> str:
+    """Return a printable diff for the given paths (for on-demand `d` review).
+
+    Tracked paths are shown via `git diff HEAD`; untracked paths have no diff to
+    show, so their (capped) content is appended under a `new file` header.
+    """
+    untracked_set = set(untracked or ())
+    tracked = [p for p in paths if p not in untracked_set]
+    parts: List[str] = []
+    if tracked:
+        out = _run(["diff", "HEAD", "--", *tracked], cwd=root, check=False)
+        if out.stdout.strip():
+            parts.append(out.stdout.rstrip("\n"))
+    for p in untracked or ():
+        parts.append(f"--- new file: {p} ---")
+        parts.append(_read_untracked_content(root, p))
+    return "\n".join(parts)
+
+
+def commit(message: str, cwd: str, *, paths: "List[str] | None" = None) -> str:
     """Create a commit. Returns the new HEAD short sha.
 
     When `paths` is given the commit is scoped to that pathspec (`git commit
@@ -280,8 +296,6 @@ def commit(
     content staged in the index. Without it, the whole index is committed.
     """
     args = ["commit", "-m", message]
-    if amend:
-        args.append("--amend")
     if paths:
         args += ["--", *paths]
     out = _run(args, cwd=cwd, check=True)
@@ -289,18 +303,14 @@ def commit(
     return (sha.stdout.strip() or out.stdout.strip())
 
 
-def head_message(cwd: str) -> str:
-    out = _run(["log", "-1", "--pretty=%B"], cwd=cwd, check=False)
-    return out.stdout.strip()
-
-
 def ensure_clean_since(snapshot_paths: set[str], cwd: str) -> List[str]:
-    """Detect external changes to files not in our plan since we snapshotted.
+    """Detect files that changed since we analysed the tree.
 
-    Returns the list of paths that changed unexpectedly. ncomm aborts if this is
-    non-empty, so an IDE auto-format doesn't sneak into a commit it wasn't
-    invited to. Files in `snapshot_paths` are expected (we stage them); we only
-    flag *other* tracked files that moved.
+    Returns paths that are dirty now but weren't part of the snapshot we showed
+    the model and the user — e.g. an IDE auto-format that landed during review.
+    The pathspec-scoped commit already keeps these out of any commit; surfacing
+    them just tells the user their commits won't match a stale review.
+    Renames/copies (R/C) are skipped because their record carries two paths.
     """
     out = _run(["status", "--porcelain=v1"], cwd=cwd, check=False)
     surprises: List[str] = []
