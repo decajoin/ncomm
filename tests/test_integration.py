@@ -1,8 +1,11 @@
 """Integration tests for ncomm.gitops against a real temporary git repo.
 
 These exercise the parts that can't be covered by pure-function tests: porcelain
-parsing and the staging/commit primitives. They guard the property that
-committing one group never sweeps in content the user had pre-staged.
+parsing (including renames) and the staging/commit primitives. They guard two
+properties the unit tests can't:
+
+  1. committing one group never sweeps in content the user had pre-staged, and
+  2. a renamed file's old-path deletion travels with its new path.
 """
 
 from __future__ import annotations
@@ -62,6 +65,30 @@ def test_prestaged_content_does_not_leak_into_commit(repo):
     # unrel.txt must still be staged and uncommitted, exactly as the user left it.
     status = _git(repo, "status", "--porcelain=v1")
     assert "M  unrel.txt" in status
+
+
+def test_rename_carries_old_path_deletion(repo):
+    # A staged rename is reported by porcelain as the single new path.
+    _git(repo, "mv", "a.txt", "b.txt")
+
+    changes = collect_changes()
+    paths = {fc.path for fc in changes.files}
+    assert "b.txt" in paths
+    assert "a.txt" not in paths  # porcelain reports only the new path
+    assert changes.renames == {"b.txt": "a.txt"}
+
+    # Commit the new path; the old path's deletion must travel with it.
+    stage(["b.txt"], cwd=changes.root)
+    rename_olds = [changes.renames[p] for p in ["b.txt"] if p in changes.renames]
+    commit("refactor: rename a to b", cwd=changes.root, paths=["b.txt"] + rename_olds)
+
+    # The new tree has b.txt and no longer has a.txt, and — the property the fix
+    # guarantees — the working tree is clean: the old path's deletion was carried
+    # into the commit rather than left dangling as an uncommitted ` D a.txt`.
+    tracked = set(_git(repo, "ls-files").splitlines())
+    assert "b.txt" in tracked and "a.txt" not in tracked
+    status = _git(repo, "status", "--porcelain=v1")
+    assert status.strip() == ""  # working tree clean — rename fully applied
 
 
 def test_deletion_stages_and_commits(repo):

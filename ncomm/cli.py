@@ -246,7 +246,10 @@ def run(
 
         try:
             stage(g.files, cwd=changes.root)
-            sha = commit(message, cwd=changes.root, paths=g.files)
+            # A renamed file's old path isn't its own changed entry, so carry
+            # its deletion into the commit pathspec or the rename is half-applied.
+            rename_olds = [changes.renames[p] for p in g.files if p in changes.renames]
+            sha = commit(message, cwd=changes.root, paths=g.files + rename_olds)
         except GitError as exc:
             err_console.print(f"[red]commit failed:[/red] {exc}")
             raise typer.Exit(code=1)

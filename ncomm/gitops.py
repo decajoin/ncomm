@@ -79,6 +79,10 @@ class Changes:
     files: List[FileChange] = field(default_factory=list)
     diff_bundle: str = ""          # truncated combined patch + untracked content
     truncated_files: List[str] = field(default_factory=list)
+    # new_path -> old_path for staged renames. Porcelain reports a rename as a
+    # single file (the new path), but committing it must also carry the old
+    # path's deletion or the rename is left half-applied. Looked up at commit.
+    renames: dict[str, str] = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
@@ -136,7 +140,7 @@ def _simplify_status(xy: str) -> str:
     return "M"
 
 
-def _parse_porcelain(cwd: str) -> Tuple[List[FileChange], List[str]]:
+def _parse_porcelain(cwd: str) -> Tuple[List[FileChange], List[str], dict[str, str]]:
     # -uall expands untracked directories into individual files; otherwise git
     # collapses `tests/` and we'd try to read a directory as a file.
     out = _run(
@@ -145,7 +149,10 @@ def _parse_porcelain(cwd: str) -> Tuple[List[FileChange], List[str]]:
     )
     files: List[FileChange] = []
     untracked: List[str] = []
-    # -z separates records by NUL; each record is "XY path" (or "XY orig\0new" for R/C).
+    renames: dict[str, str] = {}
+    # -z separates records by NUL. For a rename/copy the record is the NEW path,
+    # immediately followed by a second NUL record holding the ORIGINAL path
+    # (i.e. `R<NUL>new<NUL>old`). Verified against `git status --porcelain -z`.
     records = out.stdout.split("\0")
     i = 0
     while i < len(records):
@@ -155,8 +162,9 @@ def _parse_porcelain(cwd: str) -> Tuple[List[FileChange], List[str]]:
             continue
         xy = rec[:2]
         path = rec[3:]
+        old_path = None
         if "R" in xy or "C" in xy:
-            # next NUL record is the new path; skip it
+            old_path = records[i + 1] if i + 1 < len(records) else None
             i += 2
         else:
             i += 1
@@ -166,7 +174,11 @@ def _parse_porcelain(cwd: str) -> Tuple[List[FileChange], List[str]]:
         files.append(FileChange(path=path, status=token))
         if token == "?":
             untracked.append(path)
-    return files, untracked
+        # A rename removes the old path; a copy leaves it in place. Only pair the
+        # deletion for renames so committing the new path carries it along.
+        if token == "R" and old_path:
+            renames[path] = old_path
+    return files, untracked, renames
 
 
 def _read_untracked_content(root: str, path: str) -> str:
@@ -188,7 +200,7 @@ def collect_changes() -> Changes:
     """Gather every uncommitted change relative to HEAD into one Changes object."""
     root = repo_root()
     branch = current_branch(root)
-    files, untracked = _parse_porcelain(root)
+    files, untracked, renames = _parse_porcelain(root)
 
     # Per-file stat (additions/deletions) for the tracked portion.
     stat_out = _run(["diff", "HEAD", "--numstat"], cwd=root, check=False)
@@ -247,6 +259,7 @@ def collect_changes() -> Changes:
         files=files,
         diff_bundle="\n".join(bundle_parts).strip(),
         truncated_files=truncated,
+        renames=renames,
     )
 
 
