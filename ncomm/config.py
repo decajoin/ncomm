@@ -62,10 +62,19 @@ class Config:
     api_key: str | None
     base_url: str
     model: str
+    learn_style: bool = True
 
     @property
     def has_key(self) -> bool:
         return bool(self.api_key)
+
+
+def _as_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_config() -> Config:
@@ -85,7 +94,15 @@ def load_config() -> Config:
         or file_cfg.get("model")
         or DEFAULT_MODEL
     )
-    return Config(api_key=api_key, base_url=base_url.rstrip("/"), model=model)
+    learn_style = _as_bool(
+        os.environ.get("NCOMM_LEARN_STYLE"), _as_bool(file_cfg.get("learn_style"), True)
+    )
+    return Config(
+        api_key=api_key,
+        base_url=base_url.rstrip("/"),
+        model=model,
+        learn_style=learn_style,
+    )
 
 
 def _toml_escape(value: str) -> str:

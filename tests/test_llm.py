@@ -3,7 +3,20 @@
 import pytest
 
 from ncomm.gitops import Changes
-from ncomm.llm import CommitGroup, LLMError, _user_message, parse_groups
+from ncomm.llm import CommitGroup, LLMError, _style_message, _user_message, parse_groups
+
+
+def test_style_message_empty_is_none():
+    assert _style_message(None) is None
+    assert _style_message([]) is None
+    assert _style_message(["  ", ""]) is None
+
+
+def test_style_message_lists_subjects():
+    msg = _style_message(["feat(auth): add login", "fix: typo"])
+    assert msg["role"] == "system"
+    assert "feat(auth): add login" in msg["content"]
+    assert "fix: typo" in msg["content"]
 
 
 def test_user_message_includes_regroup_instruction():

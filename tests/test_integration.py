@@ -20,6 +20,7 @@ from ncomm.gitops import (
     commit,
     diff_for_paths,
     ensure_clean_since,
+    recent_messages,
     stage,
 )
 
@@ -165,6 +166,18 @@ def test_collect_changes_only_and_exclude_filters(repo):
     # Filtered-out files are not in the bundle the model sees either.
     assert "wip.py" not in only.diff_bundle
     assert "deps.lock" not in only.diff_bundle
+
+
+def test_recent_messages_returns_subjects(repo):
+    # The fixture made one "init" commit; add two more with known subjects.
+    (repo / "keep.txt").write_text("v2\n")
+    _git(repo, "commit", "-aqm", "feat(x): second")
+    (repo / "keep.txt").write_text("v3\n")
+    _git(repo, "commit", "-aqm", "fix: third")
+
+    msgs = recent_messages(2, cwd=str(repo))
+    assert msgs == ["fix: third", "feat(x): second"]
+    assert recent_messages(0, cwd=str(repo)) == []
 
 
 def test_ensure_clean_since_no_false_surprise(repo):

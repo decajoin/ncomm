@@ -145,10 +145,15 @@ aborts rather than commit a wrong grouping — re-run, or use `--no-group`.
 api_key = "sk-..."
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
+learn_style = true   # show recent commits to the model to match repo style
 ```
 
+With `learn_style` on (the default), ncomm passes your last few commit subjects
+to the model so generated messages follow the repo's existing conventions
+(type/scope habits, language, casing). Disable per run with `--no-style`.
+
 Env overrides: `DEEPSEEK_API_KEY` / `NCOMM_API_KEY`, `DEEPSEEK_BASE_URL`,
-`NCOMM_MODEL`, `NCOMM_LANG`.
+`NCOMM_MODEL`, `NCOMM_LANG`, `NCOMM_LEARN_STYLE`.
 
 ## License
 

@@ -87,6 +87,22 @@ class LLMError(RuntimeError):
     pass
 
 
+def _style_message(examples: "List[str] | None") -> "dict | None":
+    """Build a system message showing recent commit subjects to match, or None."""
+    cleaned = [e.strip() for e in (examples or []) if e.strip()]
+    if not cleaned:
+        return None
+    body = "\n".join(f"- {e}" for e in cleaned)
+    return {
+        "role": "system",
+        "content": (
+            "Recent commit subjects in this repository. Match their conventions "
+            "(type/scope usage, language, casing, length) unless the user's "
+            "language setting says otherwise:\n" + body
+        ),
+    }
+
+
 def _user_message(changes: Changes, *, no_group: bool, lang: str, instruction: str = "") -> str:
     lines = [
         f"Repository language for messages: {lang}",
@@ -145,6 +161,7 @@ def suggest_groups(
     no_group: bool = False,
     lang: str = "en",
     instruction: str = "",
+    style_examples: "List[str] | None" = None,
     timeout: float = 45.0,
 ) -> List[CommitGroup]:
     if not cfg.has_key:
@@ -152,18 +169,25 @@ def suggest_groups(
     if changes.is_empty:
         raise LLMError("No changes to commit.")
 
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": "Expected output shape:\n" + JSON_SCHEMA_HINT},
+    ]
+    style = _style_message(style_examples)
+    if style:
+        messages.append(style)
+    messages.append(
+        {
+            "role": "user",
+            "content": _user_message(
+                changes, no_group=no_group, lang=lang, instruction=instruction
+            ),
+        }
+    )
+
     payload = {
         "model": cfg.model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "system", "content": "Expected output shape:\n" + JSON_SCHEMA_HINT},
-            {
-                "role": "user",
-                "content": _user_message(
-                    changes, no_group=no_group, lang=lang, instruction=instruction
-                ),
-            },
-        ],
+        "messages": messages,
         "temperature": 0.0,
         "response_format": {"type": "json_object"},
         "stream": False,

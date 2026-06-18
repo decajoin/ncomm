@@ -31,6 +31,7 @@ from .gitops import (
     commit,
     diff_for_paths,
     ensure_clean_since,
+    recent_messages,
     stage,
 )
 from .llm import LLMError, suggest_groups
@@ -54,6 +55,9 @@ err_console = Console(stderr=True)
 # Cap on how many times one run may re-ask the model to regroup, so a user
 # leaning on 'r' can't burn the API indefinitely.
 MAX_REGROUP_ROUNDS = 5
+
+# How many recent commit subjects to show the model as a style reference.
+STYLE_EXAMPLE_COUNT = 10
 
 
 def _version_callback(value: bool) -> None:
@@ -265,6 +269,11 @@ def run(
         "--lang",
         help="Language for commit messages (e.g. en, zh).",
     ),
+    style: Optional[bool] = typer.Option(
+        None, "--style/--no-style",
+        help="Show recent commits to the model to match repo style "
+        "(default: config learn_style, on).",
+    ),
     version: bool = typer.Option(
         False, "--version", callback=_version_callback, is_eager=True,
         help="Show version and exit.",
@@ -308,10 +317,16 @@ def run(
 
         _render_changes(changes)
 
+        learn_style = cfg.learn_style if style is None else style
+        style_examples = (
+            recent_messages(STYLE_EXAMPLE_COUNT, cwd=changes.root) if learn_style else []
+        )
+
         try:
             with console.status(f"[dim]Asking DeepSeek ({cfg.model})…[/dim]", spinner="dots"):
                 groups = suggest_groups(
-                    changes, cfg, no_group=no_group, lang=lang, instruction=instruction
+                    changes, cfg, no_group=no_group, lang=lang,
+                    instruction=instruction, style_examples=style_examples,
                 )
         except LLMError as exc:
             err_console.print(f"[red]Error:[/red] {exc}")
@@ -421,6 +436,7 @@ def config_show() -> None:
     console.print(f"api_key     : {masked}")
     console.print(f"base_url    : {cfg.base_url}")
     console.print(f"model       : {cfg.model}")
+    console.print(f"learn_style : {cfg.learn_style}")
     console.print("[dim]ncomm will never run:[/dim] " + "; ".join(OUT_OF_SCOPE))
 
 

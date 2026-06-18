@@ -65,6 +65,18 @@ def current_branch(cwd: str) -> str:
     return name or "DETACHED"
 
 
+def recent_messages(n: int = 10, *, cwd: str) -> List[str]:
+    """Return up to `n` recent commit subject lines, for style matching.
+
+    Merges are skipped (their subjects aren't authored messages). Returns an
+    empty list on a fresh repo with no commits.
+    """
+    if n <= 0:
+        return []
+    out = _run(["log", f"-n{n}", "--no-merges", "--pretty=format:%s"], cwd=cwd, check=False)
+    return [line for line in out.stdout.splitlines() if line.strip()]
+
+
 @dataclass
 class FileChange:
     path: str
