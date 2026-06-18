@@ -1,0 +1,33 @@
+name: Publish to PyPI
+
+# Publishes ncomm-cli to PyPI when a version tag (e.g. v0.1.0) is pushed.
+# Uses PyPI Trusted Publishing (OIDC) — no API token is stored anywhere.
+# One-time setup on PyPI: project Settings -> Publishing -> add a GitHub
+# publisher with owner=decajoin, repo=ncomm, workflow=publish.yml,
+# environment=pypi.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # required for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check metadata
+        run: uvx twine check dist/*
+
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always
