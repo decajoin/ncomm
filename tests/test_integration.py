@@ -14,7 +14,13 @@ import subprocess
 
 import pytest
 
-from ncomm.gitops import collect_changes, commit, diff_for_paths, stage
+from ncomm.gitops import (
+    collect_changes,
+    commit,
+    diff_for_paths,
+    ensure_clean_since,
+    stage,
+)
 
 
 def _git(repo, *args: str) -> str:
@@ -131,3 +137,22 @@ def test_non_ascii_path_gets_a_real_patch(repo):
     assert "中文.txt" in changes.diff_bundle
     assert "(no patch)" not in changes.diff_bundle
     assert "+second" in changes.diff_bundle
+
+
+def test_ensure_clean_since_no_false_surprise(repo):
+    # An untracked directory (expanded to files by the snapshot) and a CJK path
+    # must not be reported as surprises — the check must speak the same path
+    # language as the snapshot.
+    (repo / "pkg").mkdir()
+    (repo / "pkg" / "mod.py").write_text("x = 1\n")
+    (repo / "记录.txt").write_text("hi\n")
+
+    changes = collect_changes()
+    snapshot = {fc.path for fc in changes.files}
+    assert "pkg/mod.py" in snapshot          # snapshot is file-level, not "pkg/"
+
+    assert ensure_clean_since(snapshot, cwd=changes.root) == []
+
+    # A genuinely new file not in the snapshot is still surfaced.
+    (repo / "surprise.txt").write_text("late edit\n")
+    assert ensure_clean_since(snapshot, cwd=changes.root) == ["surprise.txt"]

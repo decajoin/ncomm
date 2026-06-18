@@ -314,15 +314,30 @@ def ensure_clean_since(snapshot_paths: set[str], cwd: str) -> List[str]:
     The pathspec-scoped commit already keeps these out of any commit; surfacing
     them just tells the user their commits won't match a stale review.
     Renames/copies (R/C) are skipped because their record carries two paths.
+
+    Uses the same `-z --untracked-files=all` parsing as _parse_porcelain so the
+    snapshot and this check speak the same path language; a plain `--porcelain`
+    here would fold untracked dirs and quote special-char paths, both of which
+    would not match the snapshot and raise spurious surprises.
     """
-    out = _run(["status", "--porcelain=v1"], cwd=cwd, check=False)
+    out = _run(
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=cwd, check=False,
+    )
     surprises: List[str] = []
-    for line in out.stdout.splitlines():
-        if not line:
+    records = out.stdout.split("\0")
+    i = 0
+    while i < len(records):
+        rec = records[i]
+        if not rec:
+            i += 1
             continue
-        path = line[3:]
-        if "R" in line[:2] or "C" in line[:2]:
-            continue
-        if path not in snapshot_paths:
+        xy = rec[:2]
+        path = rec[3:]
+        if "R" in xy or "C" in xy:
+            i += 2          # skip the paired original-path record
+        else:
+            i += 1
+        if path and path not in snapshot_paths:
             surprises.append(path)
     return surprises
