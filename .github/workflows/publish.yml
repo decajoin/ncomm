@@ -1,10 +1,10 @@
 name: Publish to PyPI
 
-# Publishes ncomm-cli to PyPI when a version tag (e.g. v0.1.0) is pushed.
+# Publishes ncomm to PyPI when a version tag (e.g. v0.1.0) is pushed.
 # Uses PyPI Trusted Publishing (OIDC) — no API token is stored anywhere.
 # One-time setup on PyPI: project Settings -> Publishing -> add a GitHub
 # publisher with owner=decajoin, repo=ncomm, workflow=publish.yml,
-# environment=pypi.
+# environment=pypi. The PyPI project name must be exactly `ncomm`.
 
 on:
   push:

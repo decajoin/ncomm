@@ -10,7 +10,7 @@ from __future__ import annotations
 try:
     from importlib.metadata import version as _pkg_version
 
-    __version__ = _pkg_version("ncomm-cli")
+    __version__ = _pkg_version("ncomm")
 except Exception:  # pragma: no cover - not installed (e.g. running from source)
     __version__ = "0.1.0"
 

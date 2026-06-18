@@ -52,7 +52,7 @@ uv run ncomm --version
 Or install it as a global tool:
 
 ```bash
-uv tool install ncomm-cli
+uv tool install ncomm
 ```
 
 ### Option B — pip
@@ -72,7 +72,7 @@ ncomm --version
 Or from PyPI:
 
 ```bash
-pip install ncomm-cli
+pip install ncomm
 ```
 
 ### Regenerating the lockfile / requirements

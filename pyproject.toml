@@ -1,5 +1,5 @@
 [project]
-name = "ncomm-cli"
+name = "ncomm"
 version = "0.1.0"
 description = "Turn a working tree into well-formed Conventional Commits — group changes, review, commit. AI-assisted."
 readme = "README.md"
