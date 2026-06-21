@@ -114,6 +114,22 @@ def _render_group_diff(changes: Changes, group) -> None:
     )
 
 
+def _render_findings(findings) -> None:
+    """Print the pre-commit scan results (secrets in red, debug in yellow)."""
+    secrets = [f for f in findings if f.kind == "secret"]
+    debug = [f for f in findings if f.kind == "debug"]
+    body = Text()
+    for f in secrets + debug:
+        tag, style = ("secret", "bold red") if f.kind == "secret" else ("debug ", "bold yellow")
+        body.append(f"  {tag} ", style=style)
+        body.append(f"{f.path}:{f.line_no}  {f.rule}\n", style=style.split()[-1])
+        body.append(f"      {f.snippet}\n", style="dim")
+    title = f"pre-commit scan — {len(secrets)} secret, {len(debug)} debug"
+    console.print(
+        Panel(body, title=title, border_style="red" if secrets else "yellow", expand=False)
+    )
+
+
 def _validate_groups(groups, changed_paths: set[str]) -> Optional[str]:
     """Return an error string if the model's file assignment is wrong, else None."""
     grouped: set[str] = set()
@@ -178,7 +194,10 @@ def _edit_message(message: str) -> str:
 # --------------------------------------------------------------------------- #
 # Per-group review prompt
 # --------------------------------------------------------------------------- #
-def _prompt_group(index: int, total: int, group, changes: Changes, yes: bool) -> tuple[str, str]:
+def _prompt_group(
+    index: int, total: int, group, changes: Changes, yes: bool,
+    risky_paths: "frozenset[str]" = frozenset(),
+) -> tuple[str, str]:
     """Render a group and ask what to do with it.
 
     Returns (action, payload) where action is one of "commit" (payload is the
@@ -188,12 +207,19 @@ def _prompt_group(index: int, total: int, group, changes: Changes, yes: bool) ->
     _render_group(index, total, group)
     if yes:
         return "commit", group.message
+    # A group touching a secret-flagged file defaults to "no" — opt in explicitly.
+    has_secret = bool(risky_paths.intersection(group.files))
+    if has_secret:
+        console.print(
+            "[bold red]⚠ this group touches a secret-flagged file[/bold red] "
+            "[dim]— inspect with (d) before committing.[/dim]"
+        )
     while True:
         choice = Prompt.ask(
             "[bold]Commit this?[/bold] "
             "[dim](y)es (n)o (e)dit (d)iff (r)egroup (q)uit[/dim]",
             choices=["y", "n", "e", "d", "r", "q"],
-            default="y",
+            default="n" if has_secret else "y",
             show_choices=False,
         )
         if choice == "q":
@@ -262,6 +288,13 @@ def run(
         False, "--staged",
         help="Write one commit for what you've already staged (git add), using "
         "the index as-is. Doesn't re-stage, so 'git add -p' selections are kept.",
+    ),
+    no_scan: bool = typer.Option(
+        False, "--no-scan", help="Skip the secret/debug-leftover pre-commit scan."
+    ),
+    allow_secrets: bool = typer.Option(
+        False, "--allow-secrets",
+        help="Don't block --yes when the scan finds secret-like content.",
     ),
     pro: bool = typer.Option(
         False, "--pro", help=f"Use the stronger model ({PRO_MODEL}) for this request."
@@ -336,6 +369,19 @@ def run(
 
         _render_changes(changes)
 
+        risky_paths: frozenset[str] = frozenset()
+        if not no_scan and changes.findings:
+            _render_findings(changes.findings)
+            secrets = [f for f in changes.findings if f.kind == "secret"]
+            risky_paths = frozenset(f.path for f in secrets)
+            if secrets and yes and not allow_secrets:
+                err_console.print(
+                    f"[red]Refusing to auto-commit with --yes:[/red] "
+                    f"{len(secrets)} secret-like finding(s). Review without --yes, "
+                    "or pass --allow-secrets to override."
+                )
+                raise typer.Exit(code=1)
+
         learn_style = cfg.learn_style if style is None else style
         style_examples = (
             recent_messages(STYLE_EXAMPLE_COUNT, cwd=changes.root) if learn_style else []
@@ -380,7 +426,7 @@ def run(
 
         regroup_instruction = None
         for i, g in enumerate(groups, 1):
-            action, message = _prompt_group(i, total, g, changes, yes)
+            action, message = _prompt_group(i, total, g, changes, yes, risky_paths)
             if action == "quit":
                 break
             if action == "skip":

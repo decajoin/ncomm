@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple
 
+from . import scan
+
 # Per-file patch budget. A file whose diff exceeds this is shown head + tail
 # with the middle elided, so a giant generated/lockfile doesn't blow the token
 # budget while still signalling "this file changed a lot".
@@ -98,6 +100,8 @@ class Changes:
     # single file (the new path), but committing it must also carry the old
     # path's deletion or the rename is left half-applied. Looked up at commit.
     renames: dict[str, str] = field(default_factory=dict)
+    # Secret / debug-leftover hits in the added lines (see scan.py).
+    findings: List[scan.Finding] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -230,6 +234,14 @@ def _parse_staged(cwd: str) -> Tuple[List[FileChange], dict[str, str]]:
     return files, renames
 
 
+def _read_text(root: str, path: str) -> str:
+    """Read a file's full text, or '' if it can't be read."""
+    try:
+        return (Path(root) / path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def _read_untracked_content(root: str, path: str) -> str:
     """Read an untracked file's content, capped to UNTRACKED_CONTENT_LINES."""
     full = Path(root) / path
@@ -325,13 +337,17 @@ def collect_changes(
         bundle_parts.append("")
 
     patch_map = {p: patch for p, patch in patches}
+    findings: List[scan.Finding] = []
     for fc in files:
         if fc.status == "?":
+            # Scan the full file, but only show the capped content to the model.
+            findings.extend(scan.scan_new_file(fc.path, _read_text(root, fc.path)))
             bundle_parts.append(f"--- new file: {fc.path} ---")
             bundle_parts.append(_read_untracked_content(root, fc.path))
             bundle_parts.append("")
         else:
             patch = patch_map.get(fc.path, "(no patch)")
+            findings.extend(scan.scan_patch(fc.path, patch))
             tpatch, did_trunc = _truncate_patch(fc.path, patch)
             if did_trunc:
                 truncated.append(fc.path)
@@ -345,6 +361,7 @@ def collect_changes(
         diff_bundle="\n".join(bundle_parts).strip(),
         truncated_files=truncated,
         renames=renames,
+        findings=findings,
     )
 
 
