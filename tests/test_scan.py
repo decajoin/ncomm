@@ -55,6 +55,34 @@ def test_new_file_scan_reports_line_numbers():
     assert findings and findings[0].line_no == 2
 
 
+def test_entropy_flags_unstructured_token_as_low_confidence():
+    # A random-looking token assigned to an innocuous name — no named rule hits.
+    f = scan.scan_patch("f.py", _patch("blob = 'Zx9Qm2Lp7Vt4Rk8Nf1Wc6Hb3Yd5Sg0Aj'"))
+    assert len(f) == 1
+    assert f[0].kind == "secret" and f[0].confidence == "low"
+    assert f[0].rule == "high-entropy string"
+
+
+def test_entropy_ignores_git_hash_and_english():
+    # A sha1 hash and a normal sentence are not high-entropy secrets.
+    f = scan.scan_patch("f.py", _patch(
+        "rev = 'da39a3ee5e6b4b0d3255bfef95601890afd80709'",
+        "msg = 'the quick brown fox jumps over the lazy dog again'",
+    ))
+    assert f == []
+
+
+def test_entropy_skips_lockfiles():
+    token = "Zx9Qm2Lp7Vt4Rk8Nf1Wc6Hb3Yd5Sg0Aj"
+    assert scan.scan_patch("uv.lock", _patch(f"hash = '{token}'")) == []
+    assert scan.scan_patch("app.py", _patch(f"hash = '{token}'"))  # but flagged elsewhere
+
+
+def test_named_rule_beats_entropy_no_double_report():
+    f = scan.scan_patch("f.py", _patch("KEY = 'AKIAIOSFODNN7EXAMPLE'"))
+    assert len(f) == 1 and f[0].confidence == "high"
+
+
 def test_secret_snippet_is_masked():
     f = scan.scan_patch("f.py", _patch("token = 'sk-abcdefghij1234567890XYZ'"))
     assert f and "sk-abcdefghij1234567890XYZ" not in f[0].snippet

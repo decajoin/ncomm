@@ -11,7 +11,9 @@ Nothing here calls out to the network or the model; it's pure regex over text.
 
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
@@ -54,6 +56,42 @@ _PLACEHOLDER = re.compile(
     r"(?i)(x{3,}|your[_-]?|example|placeholder|changeme|dummy|<[^>]+>|\$\{|os\.environ|getenv)"
 )
 
+# --------------------------------------------------------------------------- #
+# Entropy detection — catches high-randomness tokens the named rules miss
+# (custom/unstructured secrets), as a *low-confidence* signal.
+# --------------------------------------------------------------------------- #
+_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{20,}")
+_HEX_HASH = re.compile(r"\A[0-9a-f]{40}\Z|\A[0-9a-f]{64}\Z")   # sha1 / sha256: usually not secrets
+_ENTROPY_MIN_LEN = 24
+_ENTROPY_THRESHOLD = 4.0          # bits/char; random base64 sits ~5.5–6, words ~3
+# Files where high-entropy tokens are expected (hashes, checksums) — skip them.
+_LOCKISH = ("lock", ".sum")
+
+
+def _shannon(s: str) -> float:
+    n = len(s)
+    if n <= 1:
+        return 0.0
+    return -sum((c / n) * math.log2(c / n) for c in Counter(s).values())
+
+
+def _is_lockish(path: str) -> bool:
+    base = path.rsplit("/", 1)[-1].lower()
+    return any(hint in base for hint in _LOCKISH)
+
+
+def _entropy_findings(path: str, line_no: int, text: str) -> List["Finding"]:
+    if _is_lockish(path):
+        return []
+    for m in _TOKEN_RE.finditer(text):
+        tok = m.group(0)
+        if len(tok) < _ENTROPY_MIN_LEN or _HEX_HASH.match(tok) or _PLACEHOLDER.search(tok):
+            continue
+        if _shannon(tok) >= _ENTROPY_THRESHOLD:
+            snippet = text.replace(tok, _mask(tok)).strip()[:160]
+            return [Finding(path, line_no, "secret", "high-entropy string", snippet, "low")]
+    return []
+
 
 @dataclass
 class Finding:
@@ -62,6 +100,7 @@ class Finding:
     kind: str          # "secret" | "debug"
     rule: str
     snippet: str
+    confidence: str = "high"   # "high" = structural match (blocks); "low" = entropy
 
 
 def _mask(value: str) -> str:
@@ -82,6 +121,9 @@ def _scan_line(path: str, line_no: int, text: str) -> List[Finding]:
         masked = text.replace(secret, _mask(secret))
         found.append(Finding(path, line_no, "secret", label, masked.strip()[:160]))
         break  # one secret hit per line is enough
+    # Entropy is a fallback for the unstructured tokens the named rules miss.
+    if not any(f.kind == "secret" for f in found):
+        found.extend(_entropy_findings(path, line_no, text))
     for label, pat in DEBUG_RULES:
         if pat.search(text):
             found.append(Finding(path, line_no, "debug", label, text.strip()[:160]))

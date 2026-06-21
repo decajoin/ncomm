@@ -129,16 +129,25 @@ def _render_gitignore_candidates(candidates: dict) -> None:
 
 
 def _render_findings(findings) -> None:
-    """Print the pre-commit scan results (secrets in red, debug in yellow)."""
-    secrets = [f for f in findings if f.kind == "secret"]
+    """Print the pre-commit scan results.
+
+    High-confidence secrets are red (and gate commits); entropy-based "maybe"
+    hits and debug leftovers are yellow advisories.
+    """
+    secrets = [f for f in findings if f.kind == "secret" and f.confidence == "high"]
+    maybe = [f for f in findings if f.kind == "secret" and f.confidence == "low"]
     debug = [f for f in findings if f.kind == "debug"]
     body = Text()
-    for f in secrets + debug:
-        tag, style = ("secret", "bold red") if f.kind == "secret" else ("debug ", "bold yellow")
-        body.append(f"  {tag} ", style=style)
-        body.append(f"{f.path}:{f.line_no}  {f.rule}\n", style=style.split()[-1])
+    rows = (
+        [("secret", "bold red", "red", f) for f in secrets]
+        + [("maybe ", "bold yellow", "yellow", f) for f in maybe]
+        + [("debug ", "bold yellow", "yellow", f) for f in debug]
+    )
+    for tag, tag_style, line_style, f in rows:
+        body.append(f"  {tag} ", style=tag_style)
+        body.append(f"{f.path}:{f.line_no}  {f.rule}\n", style=line_style)
         body.append(f"      {f.snippet}\n", style="dim")
-    title = f"pre-commit scan — {len(secrets)} secret, {len(debug)} debug"
+    title = f"pre-commit scan — {len(secrets)} secret, {len(maybe)} maybe, {len(debug)} debug"
     console.print(
         Panel(body, title=title, border_style="red" if secrets else "yellow", expand=False)
     )
@@ -407,7 +416,10 @@ def run(
         risky_paths: frozenset[str] = frozenset()
         if not no_scan and changes.findings:
             _render_findings(changes.findings)
-            secrets = [f for f in changes.findings if f.kind == "secret"]
+            # Only high-confidence (structural) secrets gate; entropy hits advise.
+            secrets = [
+                f for f in changes.findings if f.kind == "secret" and f.confidence == "high"
+            ]
             risky_paths = frozenset(f.path for f in secrets)
             if secrets and yes and not allow_secrets:
                 err_console.print(
