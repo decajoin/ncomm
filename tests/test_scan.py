@@ -26,6 +26,16 @@ def test_detects_debug_leftovers():
     assert "console logging" in rules
 
 
+def test_detects_underscore_style_secret_identifiers():
+    # The most common real-world naming: SCREAMING_SNAKE with the keyword inside.
+    f = scan.scan_patch("c.py", _patch(
+        'AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMIK7MDENGbPxRfiCY"',
+        'DATABASE_PASSWORD = "hunter2-s3cr3t"',
+    ))
+    assert len(f) == 2
+    assert all(x.kind == "secret" for x in f)
+
+
 def test_ignores_placeholders():
     f = scan.scan_patch("f.py", _patch("password = 'your_password_here'", "api_key = '${API_KEY}'"))
     assert f == []

@@ -31,8 +31,11 @@ SECRET_RULES: List[Tuple[str, "re.Pattern[str]"]] = [
     (
         "hardcoded secret assignment",
         re.compile(
-            r"""(?ix)\b(api[_-]?key|secret|token|password|passwd|access[_-]?key)\b"""
-            r"""\s*[:=]\s*['"]([^'"\s]{6,})['"]"""
+            # The keyword may be embedded in an identifier (AWS_SECRET_ACCESS_KEY,
+            # DATABASE_PASSWORD, apiKey), so don't anchor it with \b on both sides.
+            r"""(?ix)\b[a-z0-9_]*"""
+            r"""(?:api[_-]?key|secret|token|password|passwd|access[_-]?key|credential)"""
+            r"""[a-z0-9_]*\s*[:=]\s*['"]([^'"\s]{6,})['"]"""
         ),
     ),
 ]
