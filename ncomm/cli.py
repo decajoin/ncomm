@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import shlex
 import sys
@@ -34,7 +35,7 @@ from .gitops import (
     recent_messages,
     stage,
 )
-from .llm import LLMError, suggest_groups
+from .llm import LLMError, suggest_gitignore, suggest_groups
 from .safety import OUT_OF_SCOPE
 
 run_app = typer.Typer(
@@ -114,11 +115,15 @@ def _render_group_diff(changes: Changes, group) -> None:
     )
 
 
-def _render_gitignore_candidates(candidates: dict) -> None:
+def _render_gitignore_candidates(
+    candidates: dict, model_set: "frozenset[str]" = frozenset()
+) -> None:
     """Print untracked paths that look like they belong in .gitignore."""
     body = Text()
     for pattern, paths in candidates.items():
         body.append(f"  {pattern}", style="bold cyan")
+        if pattern in model_set:
+            body.append(" (model)", style="dim magenta")
         sample = ", ".join(paths[:3])
         more = f" (+{len(paths) - 3} more)" if len(paths) > 3 else ""
         body.append(f"   ← {sample}{more}\n", style="dim")
@@ -388,8 +393,20 @@ def run(
             gitignore_offered = True
             untracked = [fc.path for fc in changes.files if fc.status == "?"]
             candidates = scan.gitignore_candidates(untracked)
+            # Ask the model to spot project-specific junk the rules can't know
+            # about (only filenames are sent). Best-effort: failures are silent.
+            model_set: set[str] = set()
+            if cfg.has_key:
+                with console.status("[dim]Checking for ignorable files…[/dim]", spinner="dots"):
+                    for pat in suggest_gitignore(untracked, cfg):
+                        if pat in candidates:
+                            continue
+                        covered = [p for p in untracked if fnmatch.fnmatch(p, pat)]
+                        if covered:
+                            candidates[pat] = covered
+                            model_set.add(pat)
             if candidates:
-                _render_gitignore_candidates(candidates)
+                _render_gitignore_candidates(candidates, frozenset(model_set))
                 if Prompt.ask(
                     "Add these to [bold].gitignore[/bold]?",
                     choices=["y", "n"], default="y",
