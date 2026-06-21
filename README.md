@@ -101,9 +101,12 @@ ncomm                  # group, review each commit, commit approved ones
 ncomm -y               # commit all proposed groups without prompting
 ncomm -n               # dry run: show proposed commits, commit nothing
 ncomm --no-group       # force a single commit covering all changes
+ncomm --staged         # one commit for what you've already `git add`-ed
 ncomm --pro            # use the stronger model for this run
 ncomm -m <model>       # override the model id
 ncomm --lang en        # messages in English (default: en; use zh for Chinese)
+ncomm --no-scan        # skip the secret/debug pre-commit scan
+ncomm --allow-secrets  # don't let a secret finding block --yes
 
 # Path filtering (fnmatch globs, repeatable) — leave WIP out of the commit:
 ncomm --only 'src/auth/**' --only 'tests/test_auth*'   # only this slice
@@ -112,6 +115,33 @@ ncomm --exclude '*.lock' --exclude 'tmp/*'             # everything but these
 
 `--only` / `--exclude` filter the changed set *before* grouping, so excluded
 files stay untouched in your working tree and never need to be committed.
+
+`--staged` makes ncomm write a single commit from the index exactly as you
+staged it (it never re-stages, so a `git add -p` selection is preserved) — use
+it when you've already curated the commit yourself and just want the message.
+
+## Pre-commit guardrails
+
+Before anything is committed (or sent to the model), ncomm scans the **added
+lines** of your diff — locally, no network — for:
+
+- **secrets**: AWS / GitHub / Slack / Google keys, private-key blocks, JWTs,
+  `password = "…"`-style assignments, plus a Shannon-entropy check for random
+  custom tokens. High-confidence (structural) hits are shown in red; a group
+  touching one defaults its prompt to *no*, and `--yes` refuses to commit it
+  unless you pass `--allow-secrets`. Entropy hits are yellow "maybe" advisories.
+- **debug leftovers**: `breakpoint()` / `pdb`, `console.log`, `debugger`,
+  `binding.pry`, `dbg!` — shown in yellow.
+
+If a secret is found in interactive mode, ncomm also asks before sending the
+diff to the model, so a leaked credential can be pulled before it leaves the box.
+
+ncomm also notices untracked junk (caches, build dirs, logs, `.env`, compiled
+files) and offers to add it to `.gitignore`. The obvious cases are matched by
+rules; project-specific artifacts (model checkpoints, data dumps) are spotted by
+asking the model about the **filenames** (never their contents). You confirm
+before anything is written, and source files / committed configs are never
+suggested.
 
 ## Safety contract
 
@@ -122,7 +152,8 @@ files stay untouched in your working tree and never need to be committed.
 - *(future)* `git commit --amend` — gated behind a typed `yes`
 
 It **never** pushes, force-pushes, resets, or rebases. After committing, review
-with `git log` and push when you're ready.
+with `git log` and push when you're ready. The only other file it may write is
+`.gitignore` — and only the patterns you approve at the prompt.
 
 If the model's file assignment doesn't cover every changed file exactly, ncomm
 aborts rather than commit a wrong grouping — re-run, or use `--no-group`.
