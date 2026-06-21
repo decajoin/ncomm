@@ -12,6 +12,6 @@ try:
 
     __version__ = _pkg_version("ncomm")
 except Exception:  # pragma: no cover - not installed (e.g. running from source)
-    __version__ = "0.1.1"
+    __version__ = "0.2.0"
 
 __all__ = ["__version__"]
