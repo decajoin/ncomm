@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable, List, Tuple
+from pathlib import Path
+from typing import Dict, Iterable, List, Tuple
 
 # --------------------------------------------------------------------------- #
 # Rules
@@ -116,3 +117,88 @@ def scan_new_file(path: str, content: str) -> List[Finding]:
     for i, text in enumerate(content.splitlines(), 1):
         out.extend(_scan_line(path, i, text))
     return out
+
+
+# --------------------------------------------------------------------------- #
+# .gitignore suggestions for untracked junk
+# --------------------------------------------------------------------------- #
+# Directory names that should almost always be ignored, mapped to their pattern.
+_IGNORE_DIRS = {
+    "__pycache__": "__pycache__/",
+    "node_modules": "node_modules/",
+    ".venv": ".venv/",
+    "venv": "venv/",
+    "dist": "dist/",
+    "build": "build/",
+    ".pytest_cache": ".pytest_cache/",
+    ".ruff_cache": ".ruff_cache/",
+    ".mypy_cache": ".mypy_cache/",
+    ".tox": ".tox/",
+    "htmlcov": "htmlcov/",
+    ".idea": ".idea/",
+    ".vscode": ".vscode/",
+}
+# Exact basenames.
+_IGNORE_NAMES = {
+    ".DS_Store": ".DS_Store",
+    "Thumbs.db": "Thumbs.db",
+    ".coverage": ".coverage",
+}
+# Suffix -> glob pattern.
+_IGNORE_SUFFIXES = {
+    ".pyc": "*.pyc",
+    ".pyo": "*.pyo",
+    ".log": "*.log",
+    ".so": "*.so",
+    ".o": "*.o",
+    ".class": "*.class",
+}
+
+
+def _ignore_pattern_for(path: str) -> "str | None":
+    parts = path.split("/")
+    for part in parts:
+        if part in _IGNORE_DIRS:
+            return _IGNORE_DIRS[part]
+        if part.endswith(".egg-info"):
+            return "*.egg-info/"
+    base = parts[-1]
+    if base in _IGNORE_NAMES:
+        return _IGNORE_NAMES[base]
+    if base == ".env" or base.startswith(".env."):
+        return ".env"
+    for suffix, pattern in _IGNORE_SUFFIXES.items():
+        if base.endswith(suffix):
+            return pattern
+    return None
+
+
+def gitignore_candidates(paths: Iterable[str]) -> Dict[str, List[str]]:
+    """Map suggested .gitignore pattern -> the untracked paths it would cover."""
+    out: Dict[str, List[str]] = {}
+    for p in paths:
+        pattern = _ignore_pattern_for(p)
+        if pattern:
+            out.setdefault(pattern, []).append(p)
+    return out
+
+
+def append_gitignore(root: str, patterns: Iterable[str]) -> List[str]:
+    """Append patterns not already present to <root>/.gitignore. Returns the
+    patterns actually added (in input order, de-duplicated)."""
+    path = Path(root) / ".gitignore"
+    existing_lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    present = {line.strip() for line in existing_lines}
+    to_add: List[str] = []
+    for pat in patterns:
+        if pat not in present and pat not in to_add:
+            to_add.append(pat)
+    if not to_add:
+        return []
+    lines = list(existing_lines)
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append("# Added by ncomm")
+    lines.extend(to_add)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return to_add

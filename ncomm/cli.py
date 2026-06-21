@@ -17,7 +17,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from . import __version__
+from . import __version__, scan
 from .config import (
     PRO_MODEL,
     config_path,
@@ -111,6 +111,20 @@ def _render_group_diff(changes: Changes, group) -> None:
         return
     console.print(
         Syntax(text, "diff", theme="ansi_dark", word_wrap=False, background_color="default")
+    )
+
+
+def _render_gitignore_candidates(candidates: dict) -> None:
+    """Print untracked paths that look like they belong in .gitignore."""
+    body = Text()
+    for pattern, paths in candidates.items():
+        body.append(f"  {pattern}", style="bold cyan")
+        sample = ", ".join(paths[:3])
+        more = f" (+{len(paths) - 3} more)" if len(paths) > 3 else ""
+        body.append(f"   ← {sample}{more}\n", style="dim")
+    console.print(
+        Panel(body, title="these look like they belong in .gitignore",
+              border_style="cyan", expand=False)
     )
 
 
@@ -339,6 +353,7 @@ def run(
     instruction = ""        # carries a regroup hint into the next round
     session_committed = 0
     regroup_rounds = 0
+    gitignore_offered = False
     while True:
         try:
             changes = collect_changes(only=only, exclude=exclude, staged=staged)
@@ -356,6 +371,26 @@ def run(
             else:
                 console.print("[dim]Nothing to commit — working tree clean.[/dim]")
             return
+
+        # Offer to .gitignore obvious untracked junk (once, interactively). On
+        # acceptance, re-collect so the now-ignored files drop out and the
+        # .gitignore change itself joins the set to be committed normally.
+        if not staged and not yes and not dry_run and not gitignore_offered:
+            gitignore_offered = True
+            untracked = [fc.path for fc in changes.files if fc.status == "?"]
+            candidates = scan.gitignore_candidates(untracked)
+            if candidates:
+                _render_gitignore_candidates(candidates)
+                if Prompt.ask(
+                    "Add these to [bold].gitignore[/bold]?",
+                    choices=["y", "n"], default="y",
+                ) == "y":
+                    added = scan.append_gitignore(changes.root, list(candidates))
+                    console.print(
+                        f"[green]Updated .gitignore[/green] (+{len(added)} pattern(s)); "
+                        "re-reading changes…\n"
+                    )
+                    continue
 
         # Report a missing key before rendering the changes table, so the user
         # isn't shown their whole working tree only to be told they can't proceed.

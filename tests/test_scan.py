@@ -48,3 +48,38 @@ def test_new_file_scan_reports_line_numbers():
 def test_secret_snippet_is_masked():
     f = scan.scan_patch("f.py", _patch("token = 'sk-abcdefghij1234567890XYZ'"))
     assert f and "sk-abcdefghij1234567890XYZ" not in f[0].snippet
+
+
+def test_gitignore_candidates_maps_patterns():
+    cand = scan.gitignore_candidates([
+        "src/__pycache__/m.cpython-311.pyc",
+        "dist/pkg.whl",
+        ".DS_Store",
+        "logs/app.log",
+        ".env",
+        "ncomm.egg-info/PKG-INFO",
+        "src/real_code.py",        # not junk -> no pattern
+    ])
+    assert "__pycache__/" in cand
+    assert "dist/" in cand
+    assert ".DS_Store" in cand
+    assert "*.log" in cand
+    assert ".env" in cand
+    assert "*.egg-info/" in cand
+    assert "src/real_code.py" not in str(cand)
+
+
+def test_append_gitignore_dedups_and_preserves(tmp_path):
+    gi = tmp_path / ".gitignore"
+    gi.write_text("*.log\n")
+    added = scan.append_gitignore(str(tmp_path), ["*.log", "dist/", "dist/"])
+    assert added == ["dist/"]                     # *.log already present, dist/ once
+    text = gi.read_text()
+    assert text.startswith("*.log\n")             # original kept
+    assert "dist/" in text
+
+    # Writing to a repo with no .gitignore creates it.
+    fresh = tmp_path / "sub"
+    fresh.mkdir()
+    assert scan.append_gitignore(str(fresh), ["__pycache__/"]) == ["__pycache__/"]
+    assert (fresh / ".gitignore").exists()
