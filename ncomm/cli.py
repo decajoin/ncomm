@@ -158,6 +158,25 @@ def _render_findings(findings) -> None:
     )
 
 
+def _normalize_rename_paths(groups, renames: dict) -> None:
+    """Rewrite any rename old-path the model referenced to the new path.
+
+    A rename is reported only by its new path, but the diff shows `rename from
+    <old>` too, so the model sometimes lists the old path. Remap it (in place,
+    de-duplicated) so validation and staging line up with reality.
+    """
+    old_to_new = {old: new for new, old in renames.items()}
+    if not old_to_new:
+        return
+    for g in groups:
+        seen: list[str] = []
+        for f in g.files:
+            nf = old_to_new.get(f, f)
+            if nf not in seen:
+                seen.append(nf)
+        g.files = seen
+
+
 def _validate_groups(groups, changed_paths: set[str]) -> Optional[str]:
     """Return an error string if the model's file assignment is wrong, else None."""
     grouped: set[str] = set()
@@ -477,6 +496,7 @@ def run(
             err_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1)
 
+        _normalize_rename_paths(groups, changes.renames)
         changed_paths = {fc.path for fc in changes.files}
         err = _validate_groups(groups, changed_paths)
         if err:
