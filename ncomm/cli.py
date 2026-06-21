@@ -368,6 +368,7 @@ def run(
     session_committed = 0
     regroup_rounds = 0
     gitignore_offered = False
+    secrets_acknowledged = False
     while True:
         try:
             changes = collect_changes(only=only, exclude=exclude, staged=staged)
@@ -445,6 +446,21 @@ def run(
                     "or pass --allow-secrets to override."
                 )
                 raise typer.Exit(code=1)
+
+        # The diff (secrets and all) is about to be sent to the model. Give an
+        # interactive user the chance to stop before anything leaves the machine.
+        if risky_paths and not yes and not secrets_acknowledged:
+            if Prompt.ask(
+                "[bold red]Secret-like content detected.[/bold red] "
+                "Send the diff to the model anyway?",
+                choices=["y", "n"], default="n",
+            ) == "n":
+                err_console.print(
+                    "[dim]Aborted before sending. Remove the secrets "
+                    "(or pass --no-scan) and re-run.[/dim]"
+                )
+                raise typer.Exit(code=1)
+            secrets_acknowledged = True
 
         learn_style = cfg.learn_style if style is None else style
         style_examples = (
