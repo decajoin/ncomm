@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import shlex
 import sys
@@ -17,7 +18,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from . import __version__
+from . import __version__, scan
 from .config import (
     PRO_MODEL,
     config_path,
@@ -34,7 +35,7 @@ from .gitops import (
     recent_messages,
     stage,
 )
-from .llm import LLMError, suggest_groups
+from .llm import LLMError, suggest_gitignore, suggest_groups
 from .safety import OUT_OF_SCOPE
 
 run_app = typer.Typer(
@@ -114,6 +115,68 @@ def _render_group_diff(changes: Changes, group) -> None:
     )
 
 
+def _render_gitignore_candidates(
+    candidates: dict, model_set: "frozenset[str]" = frozenset()
+) -> None:
+    """Print untracked paths that look like they belong in .gitignore."""
+    body = Text()
+    for pattern, paths in candidates.items():
+        body.append(f"  {pattern}", style="bold cyan")
+        if pattern in model_set:
+            body.append(" (model)", style="dim magenta")
+        sample = ", ".join(paths[:3])
+        more = f" (+{len(paths) - 3} more)" if len(paths) > 3 else ""
+        body.append(f"   ← {sample}{more}\n", style="dim")
+    console.print(
+        Panel(body, title="these look like they belong in .gitignore",
+              border_style="cyan", expand=False)
+    )
+
+
+def _render_findings(findings) -> None:
+    """Print the pre-commit scan results.
+
+    High-confidence secrets are red (and gate commits); entropy-based "maybe"
+    hits and debug leftovers are yellow advisories.
+    """
+    secrets = [f for f in findings if f.kind == "secret" and f.confidence == "high"]
+    maybe = [f for f in findings if f.kind == "secret" and f.confidence == "low"]
+    debug = [f for f in findings if f.kind == "debug"]
+    body = Text()
+    rows = (
+        [("secret", "bold red", "red", f) for f in secrets]
+        + [("maybe ", "bold yellow", "yellow", f) for f in maybe]
+        + [("debug ", "bold yellow", "yellow", f) for f in debug]
+    )
+    for tag, tag_style, line_style, f in rows:
+        body.append(f"  {tag} ", style=tag_style)
+        body.append(f"{f.path}:{f.line_no}  {f.rule}\n", style=line_style)
+        body.append(f"      {f.snippet}\n", style="dim")
+    title = f"pre-commit scan — {len(secrets)} secret, {len(maybe)} maybe, {len(debug)} debug"
+    console.print(
+        Panel(body, title=title, border_style="red" if secrets else "yellow", expand=False)
+    )
+
+
+def _normalize_rename_paths(groups, renames: dict) -> None:
+    """Rewrite any rename old-path the model referenced to the new path.
+
+    A rename is reported only by its new path, but the diff shows `rename from
+    <old>` too, so the model sometimes lists the old path. Remap it (in place,
+    de-duplicated) so validation and staging line up with reality.
+    """
+    old_to_new = {old: new for new, old in renames.items()}
+    if not old_to_new:
+        return
+    for g in groups:
+        seen: list[str] = []
+        for f in g.files:
+            nf = old_to_new.get(f, f)
+            if nf not in seen:
+                seen.append(nf)
+        g.files = seen
+
+
 def _validate_groups(groups, changed_paths: set[str]) -> Optional[str]:
     """Return an error string if the model's file assignment is wrong, else None."""
     grouped: set[str] = set()
@@ -178,7 +241,10 @@ def _edit_message(message: str) -> str:
 # --------------------------------------------------------------------------- #
 # Per-group review prompt
 # --------------------------------------------------------------------------- #
-def _prompt_group(index: int, total: int, group, changes: Changes, yes: bool) -> tuple[str, str]:
+def _prompt_group(
+    index: int, total: int, group, changes: Changes, yes: bool,
+    risky_paths: "frozenset[str]" = frozenset(),
+) -> tuple[str, str]:
     """Render a group and ask what to do with it.
 
     Returns (action, payload) where action is one of "commit" (payload is the
@@ -188,12 +254,19 @@ def _prompt_group(index: int, total: int, group, changes: Changes, yes: bool) ->
     _render_group(index, total, group)
     if yes:
         return "commit", group.message
+    # A group touching a secret-flagged file defaults to "no" — opt in explicitly.
+    has_secret = bool(risky_paths.intersection(group.files))
+    if has_secret:
+        console.print(
+            "[bold red]⚠ this group touches a secret-flagged file[/bold red] "
+            "[dim]— inspect with (d) before committing.[/dim]"
+        )
     while True:
         choice = Prompt.ask(
             "[bold]Commit this?[/bold] "
             "[dim](y)es (n)o (e)dit (d)iff (r)egroup (q)uit[/dim]",
             choices=["y", "n", "e", "d", "r", "q"],
-            default="y",
+            default="n" if has_secret else "y",
             show_choices=False,
         )
         if choice == "q":
@@ -263,6 +336,13 @@ def run(
         help="Write one commit for what you've already staged (git add), using "
         "the index as-is. Doesn't re-stage, so 'git add -p' selections are kept.",
     ),
+    no_scan: bool = typer.Option(
+        False, "--no-scan", help="Skip the secret/debug-leftover pre-commit scan."
+    ),
+    allow_secrets: bool = typer.Option(
+        False, "--allow-secrets",
+        help="Don't block --yes when the scan finds secret-like content.",
+    ),
     pro: bool = typer.Option(
         False, "--pro", help=f"Use the stronger model ({PRO_MODEL}) for this request."
     ),
@@ -306,6 +386,8 @@ def run(
     instruction = ""        # carries a regroup hint into the next round
     session_committed = 0
     regroup_rounds = 0
+    gitignore_offered = False
+    secrets_acknowledged = False
     while True:
         try:
             changes = collect_changes(only=only, exclude=exclude, staged=staged)
@@ -324,6 +406,38 @@ def run(
                 console.print("[dim]Nothing to commit — working tree clean.[/dim]")
             return
 
+        # Offer to .gitignore obvious untracked junk (once, interactively). On
+        # acceptance, re-collect so the now-ignored files drop out and the
+        # .gitignore change itself joins the set to be committed normally.
+        if not staged and not yes and not dry_run and not gitignore_offered:
+            gitignore_offered = True
+            untracked = [fc.path for fc in changes.files if fc.status == "?"]
+            candidates = scan.gitignore_candidates(untracked)
+            # Ask the model to spot project-specific junk the rules can't know
+            # about (only filenames are sent). Best-effort: failures are silent.
+            model_set: set[str] = set()
+            if cfg.has_key:
+                with console.status("[dim]Checking for ignorable files…[/dim]", spinner="dots"):
+                    for pat in suggest_gitignore(untracked, cfg):
+                        if pat in candidates:
+                            continue
+                        covered = [p for p in untracked if fnmatch.fnmatch(p, pat)]
+                        if covered:
+                            candidates[pat] = covered
+                            model_set.add(pat)
+            if candidates:
+                _render_gitignore_candidates(candidates, frozenset(model_set))
+                if Prompt.ask(
+                    "Add these to [bold].gitignore[/bold]?",
+                    choices=["y", "n"], default="y",
+                ) == "y":
+                    added = scan.append_gitignore(changes.root, list(candidates))
+                    console.print(
+                        f"[green]Updated .gitignore[/green] (+{len(added)} pattern(s)); "
+                        "re-reading changes…\n"
+                    )
+                    continue
+
         # Report a missing key before rendering the changes table, so the user
         # isn't shown their whole working tree only to be told they can't proceed.
         if not cfg.has_key:
@@ -335,6 +449,37 @@ def run(
             raise typer.Exit(code=1)
 
         _render_changes(changes)
+
+        risky_paths: frozenset[str] = frozenset()
+        if not no_scan and changes.findings:
+            _render_findings(changes.findings)
+            # Only high-confidence (structural) secrets gate; entropy hits advise.
+            secrets = [
+                f for f in changes.findings if f.kind == "secret" and f.confidence == "high"
+            ]
+            risky_paths = frozenset(f.path for f in secrets)
+            if secrets and yes and not allow_secrets:
+                err_console.print(
+                    f"[red]Refusing to auto-commit with --yes:[/red] "
+                    f"{len(secrets)} secret-like finding(s). Review without --yes, "
+                    "or pass --allow-secrets to override."
+                )
+                raise typer.Exit(code=1)
+
+        # The diff (secrets and all) is about to be sent to the model. Give an
+        # interactive user the chance to stop before anything leaves the machine.
+        if risky_paths and not yes and not secrets_acknowledged:
+            if Prompt.ask(
+                "[bold red]Secret-like content detected.[/bold red] "
+                "Send the diff to the model anyway?",
+                choices=["y", "n"], default="n",
+            ) == "n":
+                err_console.print(
+                    "[dim]Aborted before sending. Remove the secrets "
+                    "(or pass --no-scan) and re-run.[/dim]"
+                )
+                raise typer.Exit(code=1)
+            secrets_acknowledged = True
 
         learn_style = cfg.learn_style if style is None else style
         style_examples = (
@@ -351,6 +496,7 @@ def run(
             err_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1)
 
+        _normalize_rename_paths(groups, changes.renames)
         changed_paths = {fc.path for fc in changes.files}
         err = _validate_groups(groups, changed_paths)
         if err:
@@ -380,7 +526,7 @@ def run(
 
         regroup_instruction = None
         for i, g in enumerate(groups, 1):
-            action, message = _prompt_group(i, total, g, changes, yes)
+            action, message = _prompt_group(i, total, g, changes, yes, risky_paths)
             if action == "quit":
                 break
             if action == "skip":

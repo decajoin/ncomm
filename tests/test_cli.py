@@ -11,6 +11,12 @@ from ncomm.llm import CommitGroup
 runner = CliRunner()
 
 
+def test_normalize_rename_paths_remaps_old_to_new():
+    g = CommitGroup(type="refactor", summary="rename", files=["app/utils.py", "app/helpers.py"])
+    cli._normalize_rename_paths([g], {"app/helpers.py": "app/utils.py"})
+    assert g.files == ["app/helpers.py"]          # old path remapped + de-duplicated
+
+
 def test_staged_rejects_only_and_exclude():
     # The guard fires before any git/LLM work, so this needs no repo or key.
     result = runner.invoke(cli.run_app, ["--staged", "--only", "src/**"])

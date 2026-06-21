@@ -1,9 +1,52 @@
 """Tests for ncomm.llm — JSON parsing into CommitGroup objects."""
 
+import json
+
 import pytest
 
+import ncomm.llm as llm
+from ncomm.config import Config
 from ncomm.gitops import Changes
 from ncomm.llm import CommitGroup, LLMError, _style_message, _user_message, parse_groups
+
+
+def _cfg():
+    return Config(api_key="sk-x", base_url="https://api.example.com", model="m")
+
+
+class _FakeResp:
+    status_code = 200
+
+    def __init__(self, patterns):
+        self._patterns = patterns
+
+    def json(self):
+        content = json.dumps({"patterns": self._patterns})
+        return {"choices": [{"message": {"content": content}}]}
+
+
+def test_suggest_gitignore_filters_source_and_lock(monkeypatch):
+    monkeypatch.setattr(
+        llm.httpx, "post",
+        lambda *a, **k: _FakeResp(["dist/", "*.log", "app.py", "pyproject.toml", "models/*.ckpt"]),
+    )
+    out = llm.suggest_gitignore(["dist/x", "a.log", "app.py", "models/m.ckpt"], _cfg())
+    assert "dist/" in out and "*.log" in out and "models/*.ckpt" in out
+    assert "app.py" not in out          # source dropped
+    assert "pyproject.toml" not in out  # committed config dropped
+
+
+def test_suggest_gitignore_no_key_or_empty_returns_empty():
+    assert llm.suggest_gitignore(["x.log"], Config(api_key=None, base_url="u", model="m")) == []
+    assert llm.suggest_gitignore([], _cfg()) == []
+
+
+def test_suggest_gitignore_swallows_errors(monkeypatch):
+    def boom(*a, **k):
+        raise llm.httpx.HTTPError("network down")
+
+    monkeypatch.setattr(llm.httpx, "post", boom)
+    assert llm.suggest_gitignore(["x.log"], _cfg()) == []
 
 
 def test_style_message_empty_is_none():

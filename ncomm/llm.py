@@ -218,3 +218,63 @@ def suggest_groups(
         raise LLMError(f"Could not parse DeepSeek response: {exc}") from exc
 
     return parse_groups(data)
+
+
+# Patterns we never let the model propose ignoring — these belong in version
+# control. A defensive post-filter, since a wrongly-ignored source file is costly.
+_NEVER_IGNORE_SUFFIXES = (
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".c", ".h",
+    ".cpp", ".cc", ".md", ".rst", ".txt", ".toml", ".cfg", ".ini", ".sh",
+    ".html", ".css", ".sql",
+)
+_NEVER_IGNORE_NAMES = {
+    "package.json", "pyproject.toml", "requirements.txt", "go.mod", "cargo.toml",
+}
+_GITIGNORE_SYSTEM = """\
+You are given a list of untracked file paths from a git repository. Return ONLY \
+the ones that are build artifacts, caches, logs, dependency directories, \
+generated files, local virtualenvs, editor/OS junk, or local secret/env files \
+that should be in .gitignore. Express them as .gitignore glob patterns (prefer \
+directory patterns like `dist/` or globs like `*.log` over individual files).
+Do NOT include source code, documentation, project configuration meant to be \
+committed, or lockfiles (those are normally committed).
+Output ONLY a JSON object: {"patterns": ["dist/", "*.log", ...]}. No prose.
+"""
+
+
+def suggest_gitignore(paths: List[str], cfg: Config, *, timeout: float = 20.0) -> List[str]:
+    """Ask the model which untracked paths look like .gitignore material.
+
+    Best-effort and advisory: any error (no key, network, bad JSON) yields an
+    empty list so the caller can fall back to its rule-based candidates. Only
+    file *names* are sent, never file contents.
+    """
+    if not paths or not cfg.has_key:
+        return []
+    payload = {
+        "model": cfg.model,
+        "messages": [
+            {"role": "system", "content": _GITIGNORE_SYSTEM},
+            {"role": "user", "content": "Untracked paths:\n" + "\n".join(paths)},
+        ],
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"},
+        "stream": False,
+    }
+    headers = {"Authorization": f"Bearer {cfg.api_key}", "Content-Type": "application/json"}
+    try:
+        resp = httpx.post(
+            f"{cfg.base_url}/chat/completions", json=payload, headers=headers, timeout=timeout
+        )
+        data = json.loads(resp.json()["choices"][0]["message"]["content"])
+        patterns = data.get("patterns", [])
+    except (httpx.HTTPError, KeyError, IndexError, ValueError, TypeError):
+        return []
+    out: List[str] = []
+    for p in patterns:
+        pat = str(p).strip()
+        name = pat.rstrip("/").rsplit("/", 1)[-1].lower()
+        if not pat or name in _NEVER_IGNORE_NAMES or name.endswith(_NEVER_IGNORE_SUFFIXES):
+            continue
+        out.append(pat)
+    return out
