@@ -30,8 +30,12 @@ FLASH_MODEL = "deepseek-v4-flash"
 PRO_MODEL = "deepseek-v4-pro"
 DEFAULT_MODEL = FLASH_MODEL
 
-# Keys we own in the config file and are allowed to (re)write.
+# Keys we own in the config file and are allowed to (re)write. String-valued
+# keys are written quoted; bool-valued keys are written bare (true/false) so the
+# file stays idiomatic TOML and a user-set `learn_style = false` survives a
+# rewrite triggered by an unrelated `config set-key` / `set-model`.
 WRITABLE_KEYS = ("api_key", "base_url", "model")
+WRITABLE_BOOL_KEYS = ("learn_style",)
 
 
 def config_path() -> Path:
@@ -112,22 +116,39 @@ def _toml_escape(value: str) -> str:
 def save_config(updates: dict) -> Path:
     """Merge `updates` into the config file and write it back (mode 0600).
 
-    Only WRITABLE_KEYS are persisted; values of None are ignored. The file is
-    rewritten as flat top-level keys, which the loader also accepts.
+    Only WRITABLE_KEYS / WRITABLE_BOOL_KEYS are persisted; values of None are
+    ignored. Crucially, existing values for keys we don't touch in `updates`
+    (e.g. a hand-set `learn_style = false`) are preserved across the rewrite,
+    not dropped. The file is rewritten as flat top-level keys, which the loader
+    also accepts.
     """
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    current = {k: v for k, v in _load_file().items() if k in WRITABLE_KEYS}
+    existing = _load_file()
+    current = {k: v for k, v in existing.items() if k in WRITABLE_KEYS}
+    # Coerce existing bool keys through _as_bool so a stringy "false" round-trips
+    # back out as a bare `false`, not a quoted string.
+    current_bools = {
+        k: _as_bool(existing[k], True) for k in WRITABLE_BOOL_KEYS if k in existing
+    }
     for key, value in updates.items():
-        if key in WRITABLE_KEYS and value is not None:
+        if value is None:
+            continue
+        if key in WRITABLE_KEYS:
             current[key] = value
+        elif key in WRITABLE_BOOL_KEYS:
+            current_bools[key] = _as_bool(value, True)
 
     lines = ["# ncomm configuration\n"]
     for key in WRITABLE_KEYS:
         value = current.get(key)
         if value:
             lines.append(f'{key} = "{_toml_escape(str(value))}"\n')
+    for key in WRITABLE_BOOL_KEYS:
+        # Use `in`, not truthiness: a stored `false` must still be written out.
+        if key in current_bools:
+            lines.append(f"{key} = {'true' if current_bools[key] else 'false'}\n")
     path.write_text("".join(lines), encoding="utf-8")
     try:
         path.chmod(0o600)
