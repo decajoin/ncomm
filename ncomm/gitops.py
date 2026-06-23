@@ -14,10 +14,11 @@ shot; untracked files are listed separately and their content read directly.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from . import scan
 
@@ -441,3 +442,25 @@ def ensure_clean_since(snapshot_paths: set[str], cwd: str) -> List[str]:
         if path and path not in snapshot_paths:
             surprises.append(path)
     return surprises
+
+
+def fingerprint_paths(paths, cwd: str) -> Dict[str, str]:
+    """Hash the current worktree bytes of each path.
+
+    Complements `ensure_clean_since`, which is membership-based and therefore
+    only catches *new* dirty files — it can't notice that a file already in the
+    set was rewritten (e.g. an IDE auto-format) between analysis and commit.
+    This captures the actual content so the two snapshots can be compared.
+
+    A missing/unreadable path (a deletion, say) maps to "" so that a path which
+    was already gone at analysis time and is still gone at commit time compares
+    equal rather than raising a spurious drift.
+    """
+    root = Path(cwd)
+    out: Dict[str, str] = {}
+    for p in paths:
+        try:
+            out[p] = hashlib.sha256((root / p).read_bytes()).hexdigest()
+        except OSError:
+            out[p] = ""
+    return out

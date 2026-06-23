@@ -32,6 +32,7 @@ from .gitops import (
     commit,
     diff_for_paths,
     ensure_clean_since,
+    fingerprint_paths,
     recent_messages,
     stage,
 )
@@ -519,6 +520,7 @@ def run(
 
         # In --staged mode unstaged changes are expected and intentionally left
         # out, so the "changed since analysis" check would only add noise.
+        baseline_fp: dict[str, str] = {}
         if not staged:
             surprises = ensure_clean_since(changed_paths, cwd=changes.root)
             if surprises:
@@ -528,6 +530,13 @@ def run(
                     f"[yellow]note:[/yellow] {len(surprises)} file(s) changed since analysis "
                     f"and won't be part of any commit: {shown}{more}"
                 )
+            # Fingerprint the content the model and user are reviewing. An
+            # interactive review can take minutes; if a file in a not-yet-
+            # committed group is rewritten in that window (IDE auto-format,
+            # say), stage()+commit() would land bytes nobody approved.
+            # ensure_clean_since can't catch this — the path is already in the
+            # set — so compare content per group just before staging.
+            baseline_fp = fingerprint_paths(changed_paths, cwd=changes.root)
 
         regroup_instruction = None
         for i, g in enumerate(groups, 1):
@@ -539,6 +548,27 @@ def run(
             if action == "regroup":
                 regroup_instruction = message
                 break
+
+            # Re-check, right before staging, that the group's files still hold
+            # the reviewed content. Only meaningful interactively (--yes has no
+            # review pause) and not in --staged mode (commits the index as-is).
+            if not staged and not yes:
+                now_fp = fingerprint_paths(g.files, cwd=changes.root)
+                drifted = sorted(
+                    p for p in g.files if baseline_fp.get(p) != now_fp.get(p)
+                )
+                if drifted:
+                    shown = ", ".join(drifted[:5])
+                    more = f" (+{len(drifted) - 5} more)" if len(drifted) > 5 else ""
+                    console.print(
+                        f"[yellow]⚠ changed since you reviewed it:[/yellow] {shown}{more}"
+                    )
+                    if Prompt.ask(
+                        "Commit the current on-disk content anyway?",
+                        choices=["y", "n"], default="n",
+                    ) == "n":
+                        console.print("[dim]Skipped.[/dim]")
+                        continue
 
             try:
                 if staged:
