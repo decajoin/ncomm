@@ -32,6 +32,7 @@ from .gitops import (
     commit,
     diff_for_paths,
     ensure_clean_since,
+    fingerprint_paths,
     recent_messages,
     stage,
 )
@@ -406,38 +407,6 @@ def run(
                 console.print("[dim]Nothing to commit — working tree clean.[/dim]")
             return
 
-        # Offer to .gitignore obvious untracked junk (once, interactively). On
-        # acceptance, re-collect so the now-ignored files drop out and the
-        # .gitignore change itself joins the set to be committed normally.
-        if not staged and not yes and not dry_run and not gitignore_offered:
-            gitignore_offered = True
-            untracked = [fc.path for fc in changes.files if fc.status == "?"]
-            candidates = scan.gitignore_candidates(untracked)
-            # Ask the model to spot project-specific junk the rules can't know
-            # about (only filenames are sent). Best-effort: failures are silent.
-            model_set: set[str] = set()
-            if cfg.has_key:
-                with console.status("[dim]Checking for ignorable files…[/dim]", spinner="dots"):
-                    for pat in suggest_gitignore(untracked, cfg):
-                        if pat in candidates:
-                            continue
-                        covered = [p for p in untracked if fnmatch.fnmatch(p, pat)]
-                        if covered:
-                            candidates[pat] = covered
-                            model_set.add(pat)
-            if candidates:
-                _render_gitignore_candidates(candidates, frozenset(model_set))
-                if Prompt.ask(
-                    "Add these to [bold].gitignore[/bold]?",
-                    choices=["y", "n"], default="y",
-                ) == "y":
-                    added = scan.append_gitignore(changes.root, list(candidates))
-                    console.print(
-                        f"[green]Updated .gitignore[/green] (+{len(added)} pattern(s)); "
-                        "re-reading changes…\n"
-                    )
-                    continue
-
         # Report a missing key before rendering the changes table, so the user
         # isn't shown their whole working tree only to be told they can't proceed.
         if not cfg.has_key:
@@ -481,6 +450,43 @@ def run(
                 raise typer.Exit(code=1)
             secrets_acknowledged = True
 
+        # Offer to .gitignore obvious untracked junk (once, interactively). This
+        # sits *after* the secret-send gate on purpose: suggest_gitignore mails
+        # untracked filenames (e.g. credentials/prod.env) to the model, and a
+        # user who declined the gate must not have anything leave the machine
+        # first. When secrets are present we also skip the model call entirely
+        # and fall back to the offline rule matcher. On acceptance, re-collect so
+        # the now-ignored files drop out and the .gitignore change itself joins
+        # the set to be committed normally.
+        if not staged and not yes and not dry_run and not gitignore_offered:
+            gitignore_offered = True
+            untracked = [fc.path for fc in changes.files if fc.status == "?"]
+            candidates = scan.gitignore_candidates(untracked)
+            # Ask the model to spot project-specific junk the rules can't know
+            # about (only filenames are sent). Best-effort: failures are silent.
+            model_set: set[str] = set()
+            if cfg.has_key and not risky_paths:
+                with console.status("[dim]Checking for ignorable files…[/dim]", spinner="dots"):
+                    for pat in suggest_gitignore(untracked, cfg):
+                        if pat in candidates:
+                            continue
+                        covered = [p for p in untracked if fnmatch.fnmatch(p, pat)]
+                        if covered:
+                            candidates[pat] = covered
+                            model_set.add(pat)
+            if candidates:
+                _render_gitignore_candidates(candidates, frozenset(model_set))
+                if Prompt.ask(
+                    "Add these to [bold].gitignore[/bold]?",
+                    choices=["y", "n"], default="y",
+                ) == "y":
+                    added = scan.append_gitignore(changes.root, list(candidates))
+                    console.print(
+                        f"[green]Updated .gitignore[/green] (+{len(added)} pattern(s)); "
+                        "re-reading changes…\n"
+                    )
+                    continue
+
         learn_style = cfg.learn_style if style is None else style
         style_examples = (
             recent_messages(STYLE_EXAMPLE_COUNT, cwd=changes.root) if learn_style else []
@@ -514,6 +520,7 @@ def run(
 
         # In --staged mode unstaged changes are expected and intentionally left
         # out, so the "changed since analysis" check would only add noise.
+        baseline_fp: dict[str, str] = {}
         if not staged:
             surprises = ensure_clean_since(changed_paths, cwd=changes.root)
             if surprises:
@@ -523,6 +530,13 @@ def run(
                     f"[yellow]note:[/yellow] {len(surprises)} file(s) changed since analysis "
                     f"and won't be part of any commit: {shown}{more}"
                 )
+            # Fingerprint the content the model and user are reviewing. An
+            # interactive review can take minutes; if a file in a not-yet-
+            # committed group is rewritten in that window (IDE auto-format,
+            # say), stage()+commit() would land bytes nobody approved.
+            # ensure_clean_since can't catch this — the path is already in the
+            # set — so compare content per group just before staging.
+            baseline_fp = fingerprint_paths(changed_paths, cwd=changes.root)
 
         regroup_instruction = None
         for i, g in enumerate(groups, 1):
@@ -534,6 +548,27 @@ def run(
             if action == "regroup":
                 regroup_instruction = message
                 break
+
+            # Re-check, right before staging, that the group's files still hold
+            # the reviewed content. Only meaningful interactively (--yes has no
+            # review pause) and not in --staged mode (commits the index as-is).
+            if not staged and not yes:
+                now_fp = fingerprint_paths(g.files, cwd=changes.root)
+                drifted = sorted(
+                    p for p in g.files if baseline_fp.get(p) != now_fp.get(p)
+                )
+                if drifted:
+                    shown = ", ".join(drifted[:5])
+                    more = f" (+{len(drifted) - 5} more)" if len(drifted) > 5 else ""
+                    console.print(
+                        f"[yellow]⚠ changed since you reviewed it:[/yellow] {shown}{more}"
+                    )
+                    if Prompt.ask(
+                        "Commit the current on-disk content anyway?",
+                        choices=["y", "n"], default="n",
+                    ) == "n":
+                        console.print("[dim]Skipped.[/dim]")
+                        continue
 
             try:
                 if staged:
